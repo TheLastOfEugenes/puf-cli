@@ -28,6 +28,8 @@ class PufApp(cmd2.Cmd):
     show_parser = cmd2.Cmd2ArgumentParser()
     show_parser.add_argument("kind", choices=["nmap", "files", "dirs", "subs"])
     show_parser.add_argument("target")
+    show_parser.add_argument("--page", type=int, default=1)
+    show_parser.add_argument("--page-size", type=int, default=250)
 
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
@@ -71,12 +73,22 @@ class PufApp(cmd2.Cmd):
         target = self._normalize_target(args.target)
 
         try:
+            if args.page < 1:
+                raise ValueError("page must be at least 1")
+            if args.page_size < 1:
+                raise ValueError("page-size must be at least 1")
+
             result_file = self._get_result_file(target, args.kind)
 
             if args.kind == "nmap":
-                print_nmap_results(result_file)
+                print_nmap_results(result_file, page=args.page, page_size=args.page_size)
             else:
-                print_ffuf_results(result_file, args.kind)
+                print_ffuf_results(
+                    result_file,
+                    args.kind,
+                    page=args.page,
+                    page_size=args.page_size,
+                )
 
         except FileNotFoundError as exc:
             self.perror(f"[!] {exc}")

@@ -30,9 +30,18 @@ def load_ffuf_results(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def print_ffuf_results(path: str | Path, kind: str) -> None:
+def print_ffuf_results(path: str | Path, kind: str, page: int = 1, page_size: int = 250) -> None:
     data = load_ffuf_results(path)
     results = data.get("results", [])
+
+    total = len(results)
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    if start >= total and total > 0:
+        raise ValueError(f"page {page} is out of range (total results: {total})")
+
+    page_rows = results[start:end]
 
     table = Table(title=f"{kind} results: {Path(path).name}")
     table.add_column("#", style="dim", no_wrap=True)
@@ -47,7 +56,7 @@ def print_ffuf_results(path: str | Path, kind: str) -> None:
 
     table.add_column("FUZZ")
 
-    for i, row in enumerate(results, 1):
+    for i, row in enumerate(page_rows, start + 1):
         input_data = row.get("input", {}) if isinstance(row, dict) else {}
         fuzz = input_data.get("FUZZ", "") if isinstance(input_data, dict) else ""
         status = str(row.get("status", "")) if isinstance(row, dict) else ""
@@ -65,7 +74,13 @@ def print_ffuf_results(path: str | Path, kind: str) -> None:
         )
 
     console.print(table)
-    console.print(f"[dim]Total results:[/dim] {len(results)}")
+
+    shown_from = 0 if total == 0 else start + 1
+    shown_to = min(end, total)
+    console.print(
+        f"[dim]Showing {shown_from}-{shown_to} of {total} results "
+        f"(page {page}, page-size {page_size})[/dim]"
+    )
 
 
 def load_nmap_xml(path: str | Path) -> ET.Element:
