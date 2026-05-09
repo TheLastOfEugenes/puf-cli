@@ -158,16 +158,20 @@ class PufApp(cmd2.Cmd):
     def do_quit(self, _: str) -> bool:
         return True
 
-    @staticmethod
     def _iter_target_dirs(self) -> list[Path]:
         if not self.base_scan_dir.exists():
             return []
-        return sorted([p for p in self.base_scan_dir.iterdir() if p.is_dir()], key=lambda p: p.name.lower())
+        return sorted(
+            [p for p in self.base_scan_dir.iterdir() if p.is_dir()],
+            key=lambda p: p.name.lower(),
+        )
 
-    @staticmethod
     def _list_result_files(self, target: str) -> list[Path]:
         scan_dir = self._get_scan_dir(target)
-        return sorted([p for p in scan_dir.iterdir() if p.is_file()], key=lambda p: p.name.lower())
+        return sorted(
+            [p for p in scan_dir.iterdir() if p.is_file()],
+            key=lambda p: p.name.lower(),
+        )
 
     @staticmethod
     def _normalize_target(target: str) -> str:
