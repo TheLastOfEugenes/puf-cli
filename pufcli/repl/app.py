@@ -8,6 +8,8 @@ import cmd2
 from pufcli.core.config import PufConfig
 from pufcli.core.scanner import run_ffuf, run_nmap
 
+from urllib.parse import urlparse
+
 
 class PufApp(cmd2.Cmd):
     intro = "PUF CLI starter. Type help or ? to list commands."
@@ -76,10 +78,23 @@ class PufApp(cmd2.Cmd):
         return True
 
     @staticmethod
-    def _target_folder(target: str) -> str:
-        cleaned = target.replace("https://", "").replace("http://", "")
-        return cleaned.replace("/", "_").replace(":", "_")
+    def _normalize_target(target: str) -> str:
+        target = target.strip()
+        if "://" not in target:
+            target = "http://" + target
+        return target
 
+    @staticmethod
+    def _target_folder(target: str) -> str:
+        parsed = urlparse(target)
+        host = parsed.netloc or parsed.path
+        path = parsed.path.strip("/")
+
+        folder = host
+        if path:
+            folder += "_" + path.replace("/", "_")
+
+        return folder.replace(":", "_")
 
 def main() -> None:
     root = Path(__file__).resolve().parents[2]
