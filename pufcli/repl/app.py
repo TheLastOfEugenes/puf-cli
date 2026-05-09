@@ -12,6 +12,7 @@ from pufcli.core.config import PufConfig
 from pufcli.core.scanner import is_running, run_ffuf, run_nmap
 from pufcli.core.viewer import print_ffuf_results, print_nmap_results
 
+import shutil
 
 class PufApp(cmd2.Cmd):
     intro = "PUF CLI starter. Type help or ? to list commands."
@@ -50,6 +51,14 @@ class PufApp(cmd2.Cmd):
     list_subparsers.add_parser("targets")
     list_results_parser = list_subparsers.add_parser("results")
     list_results_parser.add_argument("target")
+
+    remove_parser = cmd2.Cmd2ArgumentParser()
+    remove_parser.add_argument("target")
+    remove_parser.add_argument(
+        "result",
+        nargs="?",
+        choices=["nmap", "files", "dirs", "subs"],
+    )
 
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
@@ -279,6 +288,32 @@ class PufApp(cmd2.Cmd):
             self.perror(f"[!] {exc}")
         except Exception as exc:
             self.perror(f"[!] failed to list items: {exc}")
+
+    @cmd2.with_argparser(remove_parser)
+    def do_remove(self, args: argparse.Namespace) -> None:
+        target = self._normalize_target(args.target)
+
+        try:
+            scan_dir = self._get_scan_dir(target)
+
+            if args.result is None:
+                shutil.rmtree(scan_dir)
+                self.poutput(f"[+] removed target: {self._target_folder(target)}")
+                return
+
+            result_file = self._get_result_file(target, args.result)
+            result_file.unlink()
+
+            if not any(scan_dir.iterdir()):
+                scan_dir.rmdir()
+                self.poutput(f"[+] removed empty target folder: {self._target_folder(target)}")
+
+            self.poutput(f"[+] removed result: {args.result} for {self._target_folder(target)}")
+
+        except FileNotFoundError as exc:
+            self.perror(f"[!] {exc}")
+        except Exception as exc:
+            self.perror(f"[!] failed to remove: {exc}")
 
     def do_reload(self, _: str) -> None:
         self.config.reload()
