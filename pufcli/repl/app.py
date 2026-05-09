@@ -133,6 +133,7 @@ class PufApp(cmd2.Cmd):
 
                 for file in files:
                     name = file.name
+                    display_name = self._result_display_name(name)
 
                     if name == "nmap.xml":
                         style = "green"
@@ -151,7 +152,7 @@ class PufApp(cmd2.Cmd):
 
                     line = Text()
                     line.append("- ", style=style)
-                    line.append(name, style=style)
+                    line.append(display_name, style=style)
                     self.poutput(line)
 
         except FileNotFoundError as exc:
@@ -184,6 +185,36 @@ class PufApp(cmd2.Cmd):
             key=lambda p: p.name.lower(),
         )
 
+    @staticmethod
+    def _result_display_name(filename: str) -> str:
+        mapping = {
+            "nmap.xml": "nmap",
+            "files.json": "files",
+            "dirs.json": "dirs",
+            "subs.json": "subs",
+            "files_f.json": "filtered files",
+            "dirs_f.json": "filtered dirs",
+            "subs_f.json": "filtered subs",
+            "files_filtered.json": "filtered files",
+            "dirs_filtered.json": "filtered dirs",
+            "subs_filtered.json": "filtered subs",
+            "files_custom_filtered.json": "custom filtered files",
+            "dirs_custom_filtered.json": "custom filtered dirs",
+            "subs_custom_filtered.json": "custom filtered subs",
+            "files_cf.json": "custom filtered files",
+            "dirs_cf.json": "custom filtered dirs",
+            "subs_cf.json": "custom filtered subs",
+        }
+
+        if filename in mapping:
+            return mapping[filename]
+
+        if filename.endswith(".json"):
+            return filename[:-5]
+        if filename.endswith(".xml"):
+            return filename[:-4]
+        return filename
+    
     @staticmethod
     def _normalize_target(target: str) -> str:
         target = target.strip()
