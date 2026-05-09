@@ -27,12 +27,13 @@ class PufApp(cmd2.Cmd):
 
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
-        scan_dir = self.base_scan_dir / self._target_folder(args.target)
+        target = self._normalize_target(args.target)
+        scan_dir = self.base_scan_dir / self._target_folder(target)
         scan_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             if args.kind == "nmap":
-                proc, outfile, cmd = run_nmap(args.target, self.config, scan_dir)
+                proc, outfile, cmd = run_nmap(target, self.config, scan_dir)
                 self.poutput("[+] started nmap scan")
                 self.poutput(f"CMD: {' '.join(cmd)}")
                 self.poutput(f"OUTFILE: {outfile}")
@@ -46,7 +47,7 @@ class PufApp(cmd2.Cmd):
                 proc.wait()
 
             else:
-                proc, outfile, cmd = run_ffuf(args.target, args.kind, self.config, scan_dir)
+                proc, outfile, cmd = run_ffuf(target, args.kind, self.config, scan_dir)
                 self.poutput(f"[+] started {args.kind} scan")
                 self.poutput(f"CMD: {' '.join(cmd)}")
                 self.poutput(f"OUTFILE: {outfile}")
