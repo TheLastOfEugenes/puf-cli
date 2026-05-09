@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from urllib.parse import urlparse
 
 import cmd2
 
 from pufcli.core.config import PufConfig
 from pufcli.core.scanner import run_ffuf, run_nmap
-
-from urllib.parse import urlparse
+from pufcli.core.viewer import print_ffuf_results, print_nmap_results
 
 
 class PufApp(cmd2.Cmd):
@@ -24,6 +24,10 @@ class PufApp(cmd2.Cmd):
     run_parser = cmd2.Cmd2ArgumentParser()
     run_parser.add_argument("kind", choices=["nmap", "files", "dirs", "subs"])
     run_parser.add_argument("target")
+
+    show_parser = cmd2.Cmd2ArgumentParser()
+    show_parser.add_argument("kind", choices=["nmap", "files", "dirs", "subs"])
+    show_parser.add_argument("target")
 
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
@@ -62,6 +66,19 @@ class PufApp(cmd2.Cmd):
         except Exception as exc:
             self.perror(f"[!] {exc}")
 
+    @cmd2.with_argparser(show_parser)
+    def do_show(self, args: argparse.Namespace) -> None:
+        target = self._normalize_target(args.target)
+        scan_dir = self.base_scan_dir / self._target_folder(target)
+
+        try:
+            if args.kind == "nmap":
+                print_nmap_results(scan_dir / "nmap.xml")
+            else:
+                print_ffuf_results(scan_dir / f"{args.kind}.json", args.kind)
+        except Exception as exc:
+            self.perror(f"[!] {exc}")
+
     def do_reload(self, _: str) -> None:
         self.config.reload()
         self.poutput("[+] config reloaded")
@@ -95,6 +112,7 @@ class PufApp(cmd2.Cmd):
     def _nmap_target(target: str) -> str:
         parsed = urlparse(target if "://" in target else f"http://{target}")
         return parsed.hostname or target
+
 
 def main() -> None:
     root = Path(__file__).resolve().parents[2]
