@@ -5,12 +5,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import cmd2
+from rich.text import Text
 
 from pufcli.core.config import PufConfig
 from pufcli.core.scanner import run_ffuf, run_nmap
 from pufcli.core.viewer import print_ffuf_results, print_nmap_results
 
-from rich.text import Text
 
 class PufApp(cmd2.Cmd):
     intro = "PUF CLI starter. Type help or ? to list commands."
@@ -54,6 +54,102 @@ class PufApp(cmd2.Cmd):
                 self._run_single(args.kind, target, scan_dir)
         except Exception as exc:
             self.perror(f"[!] {exc}")
+
+    def _run_single(self, kind: str, target: str, scan_dir: Path) -> None:
+        if kind == "nmap":
+            nmap_target = self._nmap_target(target)
+            proc, outfile, cmd = run_nmap(
+                nmap_target,
+                self.config,
+                scan_dir,
+                verbosity="normal",
+            )
+            self.poutput("[+] started nmap scan")
+            self.poutput(f"CMD: {' '.join(cmd)}")
+            self.poutput(f"OUTFILE: {outfile}")
+
+            if proc.stdout:
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    if line:
+                        self.poutput(line)
+
+            proc.wait()
+
+        else:
+            proc, outfile, cmd = run_ffuf(
+                target,
+                kind,
+                self.config,
+                scan_dir,
+                verbosity="normal",
+            )
+            self.poutput(f"[+] started {kind} scan")
+            self.poutput(f"CMD: {' '.join(cmd)}")
+            self.poutput(f"OUTFILE: {outfile}")
+
+            if proc.stdout:
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    if line:
+                        self.poutput(line)
+
+            proc.wait()
+
+        if proc.returncode == 0:
+            self.poutput(f"[+] completed: {kind}")
+        else:
+            self.perror(f"[!] scan failed with code {proc.returncode}")
+
+    def _run_bundle(self, bundle_kind: str, target: str, scan_dir: Path) -> None:
+        kinds = self._expand_run_kind(bundle_kind)
+        self.poutput(f"[+] starting {bundle_kind} bundle for {target}")
+
+        jobs: list[tuple[str, object]] = []
+        failures: list[str] = []
+
+        visible_kind = kinds[-1] if kinds and kinds[-1] == "nmap" else None
+
+        for kind in kinds:
+            try:
+                if kind == "nmap":
+                    proc, outfile, cmd = run_nmap(
+                        self._nmap_target(target),
+                        self.config,
+                        scan_dir,
+                        verbosity="normal" if kind == visible_kind else "silent",
+                    )
+                else:
+                    proc, outfile, cmd = run_ffuf(
+                        target,
+                        kind,
+                        self.config,
+                        scan_dir,
+                        verbosity="silent",
+                    )
+
+                jobs.append((kind, proc))
+
+            except Exception:
+                failures.append(kind)
+
+        for kind, proc in jobs:
+            if kind == visible_kind and kind == "nmap" and proc.stdout:
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    if line:
+                        self.poutput(line)
+
+            proc.wait()
+
+            if proc.returncode != 0:
+                failures.append(kind)
+
+        if failures:
+            failed = ", ".join(dict.fromkeys(failures))
+            self.perror(f"[!] bundle {bundle_kind} completed with failures: {failed}")
+        else:
+            self.poutput(f"[+] bundle {bundle_kind} completed")
 
     @cmd2.with_argparser(show_parser)
     def do_show(self, args: argparse.Namespace) -> None:
@@ -112,23 +208,9 @@ class PufApp(cmd2.Cmd):
                 self.poutput(header)
 
                 for file in files:
-                    name = file.name
-                    display_name = self._result_display_name(name)
-
-                    if name == "nmap.xml":
-                        style = "green"
-                    elif name in {"files.json", "dirs.json", "subs.json"}:
-                        style = "cyan"
-                    elif name.endswith("_filtered.json"):
-                        style = "yellow"
-                    elif name.endswith("_custom_filtered.json"):
-                        style = "magenta"
-                    elif name.endswith(".json"):
-                        style = "white"
-                    elif name.endswith(".xml"):
-                        style = "green"
-                    else:
-                        style = "dim"
+                    raw_name = file.name
+                    display_name = self._result_display_name(raw_name)
+                    style = self._result_style(raw_name)
 
                     line = Text()
                     line.append("- ", style=style)
@@ -164,7 +246,7 @@ class PufApp(cmd2.Cmd):
             [p for p in scan_dir.iterdir() if p.is_file()],
             key=lambda p: p.name.lower(),
         )
-    
+
     @staticmethod
     def _expand_run_kind(kind: str) -> list[str]:
         bundles = {
@@ -177,87 +259,6 @@ class PufApp(cmd2.Cmd):
     @staticmethod
     def _is_bundle_kind(kind: str) -> bool:
         return kind in {"path", "web", "service"}
-
-    def _run_single(self, kind: str, target: str, scan_dir: Path) -> None:
-        if kind == "nmap":
-            nmap_target = self._nmap_target(target)
-            proc, outfile, cmd = run_nmap(nmap_target, self.config, scan_dir)
-            self.poutput("[+] started nmap scan")
-            self.poutput(f"CMD: {' '.join(cmd)}")
-            self.poutput(f"OUTFILE: {outfile}")
-
-            if proc.stdout:
-                for line in proc.stdout:
-                    line = line.rstrip()
-                    if line:
-                        self.poutput(line)
-
-            proc.wait()
-        else:
-            proc, outfile, cmd = run_ffuf(target, kind, self.config, scan_dir)
-            self.poutput(f"[+] started {kind} scan")
-            self.poutput(f"CMD: {' '.join(cmd)}")
-            self.poutput(f"OUTFILE: {outfile}")
-            proc.wait()
-
-        if proc.returncode == 0:
-            self.poutput(f"[+] completed: {kind}")
-        else:
-            self.perror(f"[!] scan failed with code {proc.returncode}")
-
-    def _run_bundle(self, bundle_kind: str, target: str, scan_dir: Path) -> None:
-        import subprocess
-
-        kinds = self._expand_run_kind(bundle_kind)
-        ffuf_kinds = [k for k in kinds if k != "nmap"]
-        has_nmap = "nmap" in kinds
-
-        self.poutput(f"[+] starting {bundle_kind} bundle for {target}")
-
-        jobs: list[tuple[str, object]] = []
-        failed_starts: list[str] = []
-
-        for kind in ffuf_kinds:
-            try:
-                proc, outfile, cmd = run_ffuf(target, kind, self.config, scan_dir)
-                if proc.stdout:
-                    proc.stdout.close()
-                if proc.stderr:
-                    proc.stderr.close()
-                jobs.append((kind, proc))
-            except Exception:
-                failed_starts.append(kind)
-
-        if has_nmap:
-            try:
-                nmap_target = self._nmap_target(target)
-                proc, outfile, cmd = run_nmap(nmap_target, self.config, scan_dir)
-                jobs.append(("nmap", proc))
-            except Exception:
-                failed_starts.append("nmap")
-
-        failures: list[str] = list(failed_starts)
-
-        for kind, proc in jobs:
-            if kind == "nmap":
-                if proc.stdout:
-                    for line in proc.stdout:
-                        line = line.rstrip()
-                        if line:
-                            self.poutput(line)
-                    proc.stdout.close()
-                proc.wait()
-            else:
-                proc.wait()
-
-            if proc.returncode != 0:
-                failures.append(kind)
-
-        if failures:
-            failed_str = ", ".join(failures)
-            self.perror(f"[!] bundle {bundle_kind} completed with failures: {failed_str}")
-        else:
-            self.poutput(f"[+] bundle {bundle_kind} completed")
 
     @staticmethod
     def _result_display_name(filename: str) -> str:
@@ -272,12 +273,12 @@ class PufApp(cmd2.Cmd):
             "files_filtered.json": "filtered files",
             "dirs_filtered.json": "filtered dirs",
             "subs_filtered.json": "filtered subs",
-            "files_custom_filtered.json": "custom filtered files",
-            "dirs_custom_filtered.json": "custom filtered dirs",
-            "subs_custom_filtered.json": "custom filtered subs",
             "files_cf.json": "custom filtered files",
             "dirs_cf.json": "custom filtered dirs",
             "subs_cf.json": "custom filtered subs",
+            "files_custom_filtered.json": "custom filtered files",
+            "dirs_custom_filtered.json": "custom filtered dirs",
+            "subs_custom_filtered.json": "custom filtered subs",
         }
 
         if filename in mapping:
@@ -288,7 +289,23 @@ class PufApp(cmd2.Cmd):
         if filename.endswith(".xml"):
             return filename[:-4]
         return filename
-    
+
+    @staticmethod
+    def _result_style(filename: str) -> str:
+        if filename == "nmap.xml":
+            return "green"
+        if filename in {"files.json", "dirs.json", "subs.json"}:
+            return "cyan"
+        if filename.endswith("_f.json") or filename.endswith("_filtered.json"):
+            return "yellow"
+        if filename.endswith("_cf.json") or filename.endswith("_custom_filtered.json"):
+            return "magenta"
+        if filename.endswith(".json"):
+            return "white"
+        if filename.endswith(".xml"):
+            return "green"
+        return "dim"
+
     @staticmethod
     def _normalize_target(target: str) -> str:
         target = target.strip()
@@ -307,16 +324,7 @@ class PufApp(cmd2.Cmd):
             folder += "_" + path.replace("/", "_")
 
         return folder.replace(":", "_")
-    
-    @staticmethod
-    def _expand_run_kind(kind: str) -> list[str]:
-        bundles = {
-            "path": ["files", "dirs"],
-            "web": ["files", "dirs", "subs"],
-            "service": ["nmap", "files", "dirs", "subs"],
-        }
-        return bundles.get(kind, [kind])
-    
+
     @staticmethod
     def _nmap_target(target: str) -> str:
         parsed = urlparse(target if "://" in target else f"http://{target}")

@@ -74,27 +74,53 @@ def build_ffuf_command(target: str, kind: str, config, scan_dir: str | Path) -> 
     return shlex.split(cmd), outfile
 
 
-def run_nmap(target: str, config, scan_dir: str | Path) -> tuple[subprocess.Popen, Path, list[str]]:
+def _popen_kwargs(verbosity: str) -> dict:
+    if verbosity not in {"normal", "silent"}:
+        raise ValueError(f"Invalid verbosity: {verbosity}")
+
+    if verbosity == "silent":
+        return {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "text": True,
+        }
+
+    return {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "bufsize": 1,
+    }
+
+
+def run_nmap(
+    target: str,
+    config,
+    scan_dir: str | Path,
+    verbosity: str = "normal",
+) -> tuple[subprocess.Popen, Path, list[str]]:
     cmd, outfile = build_nmap_command(target, config, scan_dir)
 
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        **_popen_kwargs(verbosity),
     )
     return proc, outfile, cmd
 
 
-def run_ffuf(target: str, kind: str, config, scan_dir: str | Path) -> tuple[subprocess.Popen, Path, list[str]]:
+def run_ffuf(
+    target: str,
+    kind: str,
+    config,
+    scan_dir: str | Path,
+    verbosity: str = "normal",
+) -> tuple[subprocess.Popen, Path, list[str]]:
     cmd, outfile = build_ffuf_command(target, kind, config, scan_dir)
 
     proc = subprocess.Popen(
         cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        text=True,
+        **_popen_kwargs(verbosity),
     )
     return proc, outfile, cmd
