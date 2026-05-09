@@ -47,40 +47,11 @@ class PufApp(cmd2.Cmd):
         scan_dir = self.base_scan_dir / self._target_folder(target)
         scan_dir.mkdir(parents=True, exist_ok=True)
 
-        kinds = self._expand_run_kind(args.kind)
-
         try:
-            self.poutput(f"[+] starting {args.kind} scan set for {target}")
-
-            for kind in kinds:
-                if kind == "nmap":
-                    nmap_target = self._nmap_target(target)
-                    proc, outfile, cmd = run_nmap(nmap_target, self.config, scan_dir)
-                    self.poutput("[+] started nmap scan")
-                    self.poutput(f"CMD: {' '.join(cmd)}")
-                    self.poutput(f"OUTFILE: {outfile}")
-
-                    if proc.stdout:
-                        for line in proc.stdout:
-                            line = line.rstrip()
-                            if line:
-                                self.poutput(line)
-
-                    proc.wait()
-
-                else:
-                    proc, outfile, cmd = run_ffuf(target, kind, self.config, scan_dir)
-                    self.poutput(f"[+] started {kind} scan")
-                    self.poutput(f"CMD: {' '.join(cmd)}")
-                    self.poutput(f"OUTFILE: {outfile}")
-                    proc.wait()
-
-                if proc.returncode == 0:
-                    self.poutput(f"[+] completed: {kind}")
-                else:
-                    self.perror(f"[!] {kind} scan failed with code {proc.returncode}")
-                    break
-
+            if self._is_bundle_kind(args.kind):
+                self._run_bundle(args.kind, target, scan_dir)
+            else:
+                self._run_single(args.kind, target, scan_dir)
         except Exception as exc:
             self.perror(f"[!] {exc}")
 
@@ -193,6 +164,100 @@ class PufApp(cmd2.Cmd):
             [p for p in scan_dir.iterdir() if p.is_file()],
             key=lambda p: p.name.lower(),
         )
+    
+    @staticmethod
+    def _expand_run_kind(kind: str) -> list[str]:
+        bundles = {
+            "path": ["files", "dirs"],
+            "web": ["files", "dirs", "subs"],
+            "service": ["files", "dirs", "subs", "nmap"],
+        }
+        return bundles.get(kind, [kind])
+
+    @staticmethod
+    def _is_bundle_kind(kind: str) -> bool:
+        return kind in {"path", "web", "service"}
+
+    def _run_single(self, kind: str, target: str, scan_dir: Path) -> None:
+        if kind == "nmap":
+            nmap_target = self._nmap_target(target)
+            proc, outfile, cmd = run_nmap(nmap_target, self.config, scan_dir)
+            self.poutput("[+] started nmap scan")
+            self.poutput(f"CMD: {' '.join(cmd)}")
+            self.poutput(f"OUTFILE: {outfile}")
+
+            if proc.stdout:
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    if line:
+                        self.poutput(line)
+
+            proc.wait()
+        else:
+            proc, outfile, cmd = run_ffuf(target, kind, self.config, scan_dir)
+            self.poutput(f"[+] started {kind} scan")
+            self.poutput(f"CMD: {' '.join(cmd)}")
+            self.poutput(f"OUTFILE: {outfile}")
+            proc.wait()
+
+        if proc.returncode == 0:
+            self.poutput(f"[+] completed: {kind}")
+        else:
+            self.perror(f"[!] scan failed with code {proc.returncode}")
+
+    def _run_bundle(self, bundle_kind: str, target: str, scan_dir: Path) -> None:
+        import subprocess
+
+        kinds = self._expand_run_kind(bundle_kind)
+        ffuf_kinds = [k for k in kinds if k != "nmap"]
+        has_nmap = "nmap" in kinds
+
+        self.poutput(f"[+] starting {bundle_kind} bundle for {target}")
+
+        jobs: list[tuple[str, object]] = []
+        failed_starts: list[str] = []
+
+        for kind in ffuf_kinds:
+            try:
+                proc, outfile, cmd = run_ffuf(target, kind, self.config, scan_dir)
+                if proc.stdout:
+                    proc.stdout.close()
+                if proc.stderr:
+                    proc.stderr.close()
+                jobs.append((kind, proc))
+            except Exception:
+                failed_starts.append(kind)
+
+        if has_nmap:
+            try:
+                nmap_target = self._nmap_target(target)
+                proc, outfile, cmd = run_nmap(nmap_target, self.config, scan_dir)
+                jobs.append(("nmap", proc))
+            except Exception:
+                failed_starts.append("nmap")
+
+        failures: list[str] = list(failed_starts)
+
+        for kind, proc in jobs:
+            if kind == "nmap":
+                if proc.stdout:
+                    for line in proc.stdout:
+                        line = line.rstrip()
+                        if line:
+                            self.poutput(line)
+                    proc.stdout.close()
+                proc.wait()
+            else:
+                proc.wait()
+
+            if proc.returncode != 0:
+                failures.append(kind)
+
+        if failures:
+            failed_str = ", ".join(failures)
+            self.perror(f"[!] bundle {bundle_kind} completed with failures: {failed_str}")
+        else:
+            self.poutput(f"[+] bundle {bundle_kind} completed")
 
     @staticmethod
     def _result_display_name(filename: str) -> str:
