@@ -92,9 +92,9 @@ def run_ffuf(target: str, kind: str, config, scan_dir: str | Path) -> tuple[subp
 
     proc = subprocess.Popen(
         cmd,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         text=True,
-        bufsize=1,
     )
     return proc, outfile, cmd

@@ -38,6 +38,13 @@ class PufApp(cmd2.Cmd):
                 self.poutput("[+] started nmap scan")
                 self.poutput(f"CMD: {' '.join(cmd)}")
                 self.poutput(f"OUTFILE: {outfile}")
+
+                if proc.stdout:
+                    for line in proc.stdout:
+                        line = line.rstrip()
+                        if line:
+                            self.poutput(line)
+
                 proc.wait()
 
             else:
