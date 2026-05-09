@@ -33,17 +33,11 @@ class PufApp(cmd2.Cmd):
 
         try:
             if args.kind == "nmap":
-                proc, outfile, cmd = run_nmap(target, self.config, scan_dir)
+                nmap_target = self._nmap_target(target)
+                proc, outfile, cmd = run_nmap(nmap_target, self.config, scan_dir)
                 self.poutput("[+] started nmap scan")
                 self.poutput(f"CMD: {' '.join(cmd)}")
                 self.poutput(f"OUTFILE: {outfile}")
-
-                if proc.stdout:
-                    for line in proc.stdout:
-                        line = line.rstrip()
-                        if line:
-                            self.poutput(line)
-
                 proc.wait()
 
             else:
@@ -51,13 +45,6 @@ class PufApp(cmd2.Cmd):
                 self.poutput(f"[+] started {args.kind} scan")
                 self.poutput(f"CMD: {' '.join(cmd)}")
                 self.poutput(f"OUTFILE: {outfile}")
-
-                if proc.stderr:
-                    for line in proc.stderr:
-                        line = line.rstrip()
-                        if line:
-                            self.poutput(line)
-
                 proc.wait()
 
             if proc.returncode == 0:
@@ -96,6 +83,11 @@ class PufApp(cmd2.Cmd):
             folder += "_" + path.replace("/", "_")
 
         return folder.replace(":", "_")
+
+    @staticmethod
+    def _nmap_target(target: str) -> str:
+        parsed = urlparse(target if "://" in target else f"http://{target}")
+        return parsed.hostname or target
 
 def main() -> None:
     root = Path(__file__).resolve().parents[2]
