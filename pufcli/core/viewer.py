@@ -86,7 +86,8 @@ def print_ffuf_results(path: str | Path, kind: str, page: int = 1, page_size: in
             f"[{status_style}]{status}[/{status_style}]",
             f"[dim]{words}[/dim]",
             f"[dim]{length}[/dim]",
-            f"[cyan]{value}[/cyan]",
+            f"[{status_style}]{value}[/{status_style}]",
+#            f"[cyan]{value}[/cyan]",
             str(fuzz),
         )
 
