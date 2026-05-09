@@ -102,11 +102,7 @@ def run_nmap(
     verbosity: str = "normal",
 ) -> tuple[subprocess.Popen, Path, list[str]]:
     cmd, outfile = build_nmap_command(target, config, scan_dir)
-
-    proc = subprocess.Popen(
-        cmd,
-        **_popen_kwargs(verbosity),
-    )
+    proc = subprocess.Popen(cmd, **_popen_kwargs(verbosity))
     return proc, outfile, cmd
 
 
@@ -118,9 +114,9 @@ def run_ffuf(
     verbosity: str = "normal",
 ) -> tuple[subprocess.Popen, Path, list[str]]:
     cmd, outfile = build_ffuf_command(target, kind, config, scan_dir)
-
-    proc = subprocess.Popen(
-        cmd,
-        **_popen_kwargs(verbosity),
-    )
+    proc = subprocess.Popen(cmd, **_popen_kwargs(verbosity))
     return proc, outfile, cmd
+
+
+def is_running(proc: subprocess.Popen) -> bool:
+    return proc.poll() is None

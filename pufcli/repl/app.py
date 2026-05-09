@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -8,7 +9,7 @@ import cmd2
 from rich.text import Text
 
 from pufcli.core.config import PufConfig
-from pufcli.core.scanner import run_ffuf, run_nmap
+from pufcli.core.scanner import is_running, run_ffuf, run_nmap
 from pufcli.core.viewer import print_ffuf_results, print_nmap_results
 
 
@@ -20,7 +21,16 @@ class PufApp(cmd2.Cmd):
         super().__init__(allow_cli_args=False)
         self.config = PufConfig(config_path)
         self.base_scan_dir = Path("scans")
+        self.prompt = "puf-cli > "
+        self.continuation_prompt = "... "
         self.poutput("PUF CLI ready")
+
+    def preloop(self) -> None:
+        self.prompt = "puf-cli > "
+
+    def postcmd(self, stop: bool, line: str) -> bool:
+        self.prompt = "puf-cli > "
+        return stop
 
     run_parser = cmd2.Cmd2ArgumentParser()
     run_parser.add_argument(
@@ -37,7 +47,7 @@ class PufApp(cmd2.Cmd):
 
     list_parser = cmd2.Cmd2ArgumentParser()
     list_subparsers = list_parser.add_subparsers(dest="subject", required=True)
-    list_targets_parser = list_subparsers.add_parser("targets")
+    list_subparsers.add_parser("targets")
     list_results_parser = list_subparsers.add_parser("results")
     list_results_parser.add_argument("target")
 
@@ -52,8 +62,12 @@ class PufApp(cmd2.Cmd):
                 self._run_bundle(args.kind, target, scan_dir)
             else:
                 self._run_single(args.kind, target, scan_dir)
+        except KeyboardInterrupt:
+            self.perror("[!] interrupted")
         except Exception as exc:
             self.perror(f"[!] {exc}")
+        finally:
+            self.prompt = "puf-cli > "
 
     def _run_single(self, kind: str, target: str, scan_dir: Path) -> None:
         if kind == "nmap":
@@ -64,18 +78,6 @@ class PufApp(cmd2.Cmd):
                 scan_dir,
                 verbosity="normal",
             )
-            self.poutput("[+] started nmap scan")
-            self.poutput(f"CMD: {' '.join(cmd)}")
-            self.poutput(f"OUTFILE: {outfile}")
-
-            if proc.stdout:
-                for line in proc.stdout:
-                    line = line.rstrip()
-                    if line:
-                        self.poutput(line)
-
-            proc.wait()
-
         else:
             proc, outfile, cmd = run_ffuf(
                 target,
@@ -84,17 +86,20 @@ class PufApp(cmd2.Cmd):
                 scan_dir,
                 verbosity="normal",
             )
-            self.poutput(f"[+] started {kind} scan")
-            self.poutput(f"CMD: {' '.join(cmd)}")
-            self.poutput(f"OUTFILE: {outfile}")
 
-            if proc.stdout:
-                for line in proc.stdout:
-                    line = line.rstrip()
-                    if line:
-                        self.poutput(line)
+        self.poutput(f"[+] started {kind} scan")
+        self.poutput(f"CMD: {' '.join(cmd)}")
+        self.poutput(f"OUTFILE: {outfile}")
 
-            proc.wait()
+        if proc.stdout:
+            for line in iter(proc.stdout.readline, ""):
+                if line == "" and proc.poll() is not None:
+                    break
+                line = line.rstrip()
+                if line:
+                    self.poutput(line)
+
+        proc.wait()
 
         if proc.returncode == 0:
             self.poutput(f"[+] completed: {kind}")
@@ -104,8 +109,9 @@ class PufApp(cmd2.Cmd):
     def _run_bundle(self, bundle_kind: str, target: str, scan_dir: Path) -> None:
         kinds = self._expand_run_kind(bundle_kind)
         self.poutput(f"[+] starting {bundle_kind} bundle for {target}")
+        self.poutput(f"[+] bundle plan: {', '.join(kinds)}")
 
-        jobs: list[tuple[str, object]] = []
+        jobs: list[dict] = []
         failures: list[str] = []
 
         visible_kind = kinds[-1] if kinds and kinds[-1] == "nmap" else None
@@ -128,28 +134,81 @@ class PufApp(cmd2.Cmd):
                         verbosity="silent",
                     )
 
-                jobs.append((kind, proc))
+                jobs.append(
+                    {
+                        "kind": kind,
+                        "proc": proc,
+                        "outfile": outfile,
+                        "cmd": cmd,
+                        "reported": False,
+                    }
+                )
+                self.poutput(f"[+] launched {kind}")
 
-            except Exception:
+            except Exception as exc:
                 failures.append(kind)
+                self.perror(f"[!] failed to launch {kind}: {exc}")
 
-        for kind, proc in jobs:
-            if kind == visible_kind and kind == "nmap" and proc.stdout:
-                for line in proc.stdout:
+        visible_job = None
+        for job in jobs:
+            if job["kind"] == visible_kind:
+                visible_job = job
+                break
+
+        if visible_job and visible_job["proc"].stdout:
+            proc = visible_job["proc"]
+
+            while True:
+                line = proc.stdout.readline()
+                if line:
                     line = line.rstrip()
                     if line:
                         self.poutput(line)
 
-            proc.wait()
+                self._report_finished_jobs(jobs, failures)
 
-            if proc.returncode != 0:
-                failures.append(kind)
+                if line == "" and proc.poll() is not None:
+                    break
+
+            proc.wait()
+            self._report_finished_jobs(jobs, failures)
+        else:
+            while any(is_running(job["proc"]) for job in jobs):
+                self._report_finished_jobs(jobs, failures)
+                time.sleep(0.2)
+
+        for job in jobs:
+            if not job["reported"]:
+                rc = job["proc"].wait()
+                if rc == 0:
+                    self.poutput(f"[+] completed: {job['kind']}")
+                else:
+                    failures.append(job["kind"])
+                    self.perror(f"[!] failed: {job['kind']} (code {rc})")
+                job["reported"] = True
 
         if failures:
             failed = ", ".join(dict.fromkeys(failures))
             self.perror(f"[!] bundle {bundle_kind} completed with failures: {failed}")
         else:
             self.poutput(f"[+] bundle {bundle_kind} completed")
+
+    def _report_finished_jobs(self, jobs: list[dict], failures: list[str]) -> None:
+        for job in jobs:
+            if job["reported"]:
+                continue
+
+            rc = job["proc"].poll()
+            if rc is None:
+                continue
+
+            if rc == 0:
+                self.poutput(f"[+] completed: {job['kind']}")
+            else:
+                failures.append(job["kind"])
+                self.perror(f"[!] failed: {job['kind']} (code {rc})")
+
+            job["reported"] = True
 
     @cmd2.with_argparser(show_parser)
     def do_show(self, args: argparse.Namespace) -> None:
@@ -172,7 +231,6 @@ class PufApp(cmd2.Cmd):
                     page=args.page,
                     page_size=args.page_size,
                 )
-
         except FileNotFoundError as exc:
             self.perror(f"[!] {exc}")
         except Exception as exc:
