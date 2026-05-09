@@ -10,6 +10,7 @@ from pufcli.core.config import PufConfig
 from pufcli.core.scanner import run_ffuf, run_nmap
 from pufcli.core.viewer import print_ffuf_results, print_nmap_results
 
+from rich.text import Text
 
 class PufApp(cmd2.Cmd):
     intro = "PUF CLI starter. Type help or ? to list commands."
@@ -107,22 +108,29 @@ class PufApp(cmd2.Cmd):
             if args.subject == "targets":
                 targets = self._iter_target_dirs()
                 if not targets:
-                    self.poutput("[yellow]No scanned targets found[/yellow]")
+                    self.poutput(Text("No scanned targets found", style="yellow"))
                     return
 
-                self.poutput("[bold blue]Available targets[/bold blue]")
+                self.poutput(Text("Available targets", style="bold blue"))
                 for target in targets:
-                    self.poutput(f"[cyan]-[/cyan] {target.name}")
+                    line = Text()
+                    line.append("- ", style="cyan")
+                    line.append(target.name)
+                    self.poutput(line)
 
             elif args.subject == "results":
                 target = self._normalize_target(args.target)
                 files = self._list_result_files(target)
 
                 if not files:
-                    self.poutput("[yellow]No result files found for target[/yellow]")
+                    self.poutput(Text("No result files found for target", style="yellow"))
                     return
 
-                self.poutput(f"[bold blue]Available results for[/bold blue] [cyan]{self._target_folder(target)}[/cyan]")
+                header = Text()
+                header.append("Available results for ", style="bold blue")
+                header.append(self._target_folder(target), style="cyan")
+                self.poutput(header)
+
                 for file in files:
                     name = file.name
 
@@ -141,7 +149,10 @@ class PufApp(cmd2.Cmd):
                     else:
                         style = "dim"
 
-                    self.poutput(f"[{style}]- {name}[/{style}]")
+                    line = Text()
+                    line.append("- ", style=style)
+                    line.append(name, style=style)
+                    self.poutput(line)
 
         except FileNotFoundError as exc:
             self.perror(f"[!] {exc}")
