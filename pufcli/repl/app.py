@@ -47,10 +47,7 @@ class PufApp(cmd2.Cmd):
     show_parser.add_argument("--page-size", type=int, default=250)
 
     list_parser = cmd2.Cmd2ArgumentParser()
-    list_subparsers = list_parser.add_subparsers(dest="subject", required=True)
-    list_subparsers.add_parser("targets")
-    list_results_parser = list_subparsers.add_parser("results")
-    list_results_parser.add_argument("target")
+    list_parser.add_argument("target", nargs="?")
 
     remove_parser = cmd2.Cmd2ArgumentParser()
     remove_parser.add_argument("target")
@@ -248,7 +245,7 @@ class PufApp(cmd2.Cmd):
     @cmd2.with_argparser(list_parser)
     def do_list(self, args: argparse.Namespace) -> None:
         try:
-            if args.subject == "targets":
+            if args.target is None:
                 targets = self._iter_target_dirs()
                 if not targets:
                     self.poutput(Text("No scanned targets found", style="yellow"))
@@ -260,29 +257,29 @@ class PufApp(cmd2.Cmd):
                     line.append("- ", style="cyan")
                     line.append(target.name)
                     self.poutput(line)
+                return
 
-            elif args.subject == "results":
-                target = self._normalize_target(args.target)
-                files = self._list_result_files(target)
+            target = self._normalize_target(args.target)
+            files = self._list_result_files(target)
 
-                if not files:
-                    self.poutput(Text("No result files found for target", style="yellow"))
-                    return
+            if not files:
+                self.poutput(Text("No result files found for target", style="yellow"))
+                return
 
-                header = Text()
-                header.append("Available results for ", style="bold blue")
-                header.append(self._target_folder(target), style="cyan")
-                self.poutput(header)
+            header = Text()
+            header.append("Available results for ", style="bold blue")
+            header.append(self._target_folder(target), style="cyan")
+            self.poutput(header)
 
-                for file in files:
-                    raw_name = file.name
-                    display_name = self._result_display_name(raw_name)
-                    style = self._result_style(raw_name)
+            for file in files:
+                raw_name = file.name
+                display_name = self._result_display_name(raw_name)
+                style = self._result_style(raw_name)
 
-                    line = Text()
-                    line.append("- ", style=style)
-                    line.append(display_name, style=style)
-                    self.poutput(line)
+                line = Text()
+                line.append("- ", style=style)
+                line.append(display_name, style=style)
+                self.poutput(line)
 
         except FileNotFoundError as exc:
             self.perror(f"[!] {exc}")
@@ -297,17 +294,24 @@ class PufApp(cmd2.Cmd):
             scan_dir = self._get_scan_dir(target)
 
             if args.result is None:
+                label = self._target_folder(target)
+                if not self._confirm(f"Remove target '{label}'?"):
+                    self.poutput("[+] cancelled")
+                    return
+
                 shutil.rmtree(scan_dir)
-                self.poutput(f"[+] removed target: {self._target_folder(target)}")
+                self.poutput(f"[+] removed target: {label}")
                 return
 
             result_file = self._get_result_file(target, args.result)
+
+            if not self._confirm(
+                f"Remove result '{args.result}' for target '{self._target_folder(target)}'?"
+            ):
+                self.poutput("[+] cancelled")
+                return
+
             result_file.unlink()
-
-            if not any(scan_dir.iterdir()):
-                scan_dir.rmdir()
-                self.poutput(f"[+] removed empty target folder: {self._target_folder(target)}")
-
             self.poutput(f"[+] removed result: {args.result} for {self._target_folder(target)}")
 
         except FileNotFoundError as exc:
@@ -324,6 +328,15 @@ class PufApp(cmd2.Cmd):
 
     def do_quit(self, _: str) -> bool:
         return True
+
+    def _confirm(self, prompt: str) -> bool:
+        while True:
+            answer = input(f"{prompt} [y/N]: ").strip().lower()
+            if answer in {"", "n", "no"}:
+                return False
+            if answer in {"y", "yes"}:
+                return True
+            self.poutput("Please answer with y or N.")
 
     def _iter_target_dirs(self) -> list[Path]:
         if not self.base_scan_dir.exists():
