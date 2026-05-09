@@ -31,6 +31,12 @@ class PufApp(cmd2.Cmd):
     show_parser.add_argument("--page", type=int, default=1)
     show_parser.add_argument("--page-size", type=int, default=250)
 
+    list_parser = cmd2.Cmd2ArgumentParser()
+    list_subparsers = list_parser.add_subparsers(dest="subject", required=True)
+    list_targets_parser = list_subparsers.add_parser("targets")
+    list_results_parser = list_subparsers.add_parser("results")
+    list_results_parser.add_argument("target")
+
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
         target = self._normalize_target(args.target)
@@ -95,6 +101,53 @@ class PufApp(cmd2.Cmd):
         except Exception as exc:
             self.perror(f"[!] failed to show results: {exc}")
 
+    @cmd2.with_argparser(list_parser)
+    def do_list(self, args: argparse.Namespace) -> None:
+        try:
+            if args.subject == "targets":
+                targets = self._iter_target_dirs()
+                if not targets:
+                    self.poutput("[yellow]No scanned targets found[/yellow]")
+                    return
+
+                self.poutput("[bold blue]Available targets[/bold blue]")
+                for target in targets:
+                    self.poutput(f"[cyan]-[/cyan] {target.name}")
+
+            elif args.subject == "results":
+                target = self._normalize_target(args.target)
+                files = self._list_result_files(target)
+
+                if not files:
+                    self.poutput("[yellow]No result files found for target[/yellow]")
+                    return
+
+                self.poutput(f"[bold blue]Available results for[/bold blue] [cyan]{self._target_folder(target)}[/cyan]")
+                for file in files:
+                    name = file.name
+
+                    if name == "nmap.xml":
+                        style = "green"
+                    elif name in {"files.json", "dirs.json", "subs.json"}:
+                        style = "cyan"
+                    elif name.endswith("_filtered.json"):
+                        style = "yellow"
+                    elif name.endswith("_custom_filtered.json"):
+                        style = "magenta"
+                    elif name.endswith(".json"):
+                        style = "white"
+                    elif name.endswith(".xml"):
+                        style = "green"
+                    else:
+                        style = "dim"
+
+                    self.poutput(f"[{style}]- {name}[/{style}]")
+
+        except FileNotFoundError as exc:
+            self.perror(f"[!] {exc}")
+        except Exception as exc:
+            self.perror(f"[!] failed to list items: {exc}")
+
     def do_reload(self, _: str) -> None:
         self.config.reload()
         self.poutput("[+] config reloaded")
@@ -104,6 +157,17 @@ class PufApp(cmd2.Cmd):
 
     def do_quit(self, _: str) -> bool:
         return True
+
+    @staticmethod
+    def _iter_target_dirs(self) -> list[Path]:
+        if not self.base_scan_dir.exists():
+            return []
+        return sorted([p for p in self.base_scan_dir.iterdir() if p.is_dir()], key=lambda p: p.name.lower())
+
+    @staticmethod
+    def _list_result_files(self, target: str) -> list[Path]:
+        scan_dir = self._get_scan_dir(target)
+        return sorted([p for p in scan_dir.iterdir() if p.is_file()], key=lambda p: p.name.lower())
 
     @staticmethod
     def _normalize_target(target: str) -> str:
