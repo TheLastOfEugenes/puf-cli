@@ -69,15 +69,19 @@ class PufApp(cmd2.Cmd):
     @cmd2.with_argparser(show_parser)
     def do_show(self, args: argparse.Namespace) -> None:
         target = self._normalize_target(args.target)
-        scan_dir = self.base_scan_dir / self._target_folder(target)
 
         try:
+            result_file = self._get_result_file(target, args.kind)
+
             if args.kind == "nmap":
-                print_nmap_results(scan_dir / "nmap.xml")
+                print_nmap_results(result_file)
             else:
-                print_ffuf_results(scan_dir / f"{args.kind}.json", args.kind)
-        except Exception as exc:
+                print_ffuf_results(result_file, args.kind)
+
+        except FileNotFoundError as exc:
             self.perror(f"[!] {exc}")
+        except Exception as exc:
+            self.perror(f"[!] failed to show results: {exc}")
 
     def do_reload(self, _: str) -> None:
         self.config.reload()
@@ -112,6 +116,27 @@ class PufApp(cmd2.Cmd):
     def _nmap_target(target: str) -> str:
         parsed = urlparse(target if "://" in target else f"http://{target}")
         return parsed.hostname or target
+
+    def _get_scan_dir(self, target: str) -> Path:
+        scan_dir = self.base_scan_dir / self._target_folder(target)
+        if not scan_dir.exists():
+            raise FileNotFoundError("target has not been scanned yet")
+        return scan_dir
+
+    def _get_result_file(self, target: str, kind: str) -> Path:
+        scan_dir = self._get_scan_dir(target)
+
+        if kind == "nmap":
+            result_file = scan_dir / "nmap.xml"
+        else:
+            result_file = scan_dir / f"{kind}.json"
+
+        if not result_file.exists():
+            if kind == "nmap":
+                raise FileNotFoundError("target has not been scanned with nmap yet")
+            raise FileNotFoundError(f"target has not been scanned for {kind} yet")
+
+        return result_file
 
 
 def main() -> None:
