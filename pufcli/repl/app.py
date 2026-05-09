@@ -23,7 +23,10 @@ class PufApp(cmd2.Cmd):
         self.poutput("PUF CLI ready")
 
     run_parser = cmd2.Cmd2ArgumentParser()
-    run_parser.add_argument("kind", choices=["nmap", "files", "dirs", "subs"])
+    run_parser.add_argument(
+        "kind",
+        choices=["nmap", "files", "dirs", "subs", "path", "web", "service"],
+    )
     run_parser.add_argument("target")
 
     show_parser = cmd2.Cmd2ArgumentParser()
@@ -44,33 +47,39 @@ class PufApp(cmd2.Cmd):
         scan_dir = self.base_scan_dir / self._target_folder(target)
         scan_dir.mkdir(parents=True, exist_ok=True)
 
+        kinds = self._expand_run_kind(args.kind)
+
         try:
-            if args.kind == "nmap":
-                nmap_target = self._nmap_target(target)
-                proc, outfile, cmd = run_nmap(nmap_target, self.config, scan_dir)
-                self.poutput("[+] started nmap scan")
-                self.poutput(f"CMD: {' '.join(cmd)}")
-                self.poutput(f"OUTFILE: {outfile}")
+            self.poutput(f"[+] starting {args.kind} scan set for {target}")
 
-                if proc.stdout:
-                    for line in proc.stdout:
-                        line = line.rstrip()
-                        if line:
-                            self.poutput(line)
+            for kind in kinds:
+                if kind == "nmap":
+                    nmap_target = self._nmap_target(target)
+                    proc, outfile, cmd = run_nmap(nmap_target, self.config, scan_dir)
+                    self.poutput("[+] started nmap scan")
+                    self.poutput(f"CMD: {' '.join(cmd)}")
+                    self.poutput(f"OUTFILE: {outfile}")
 
-                proc.wait()
+                    if proc.stdout:
+                        for line in proc.stdout:
+                            line = line.rstrip()
+                            if line:
+                                self.poutput(line)
 
-            else:
-                proc, outfile, cmd = run_ffuf(target, args.kind, self.config, scan_dir)
-                self.poutput(f"[+] started {args.kind} scan")
-                self.poutput(f"CMD: {' '.join(cmd)}")
-                self.poutput(f"OUTFILE: {outfile}")
-                proc.wait()
+                    proc.wait()
 
-            if proc.returncode == 0:
-                self.poutput(f"[+] completed: {args.kind}")
-            else:
-                self.perror(f"[!] scan failed with code {proc.returncode}")
+                else:
+                    proc, outfile, cmd = run_ffuf(target, kind, self.config, scan_dir)
+                    self.poutput(f"[+] started {kind} scan")
+                    self.poutput(f"CMD: {' '.join(cmd)}")
+                    self.poutput(f"OUTFILE: {outfile}")
+                    proc.wait()
+
+                if proc.returncode == 0:
+                    self.poutput(f"[+] completed: {kind}")
+                else:
+                    self.perror(f"[!] {kind} scan failed with code {proc.returncode}")
+                    break
 
         except Exception as exc:
             self.perror(f"[!] {exc}")
@@ -233,7 +242,16 @@ class PufApp(cmd2.Cmd):
             folder += "_" + path.replace("/", "_")
 
         return folder.replace(":", "_")
-
+    
+    @staticmethod
+    def _expand_run_kind(kind: str) -> list[str]:
+        bundles = {
+            "path": ["files", "dirs"],
+            "web": ["files", "dirs", "subs"],
+            "service": ["nmap", "files", "dirs", "subs"],
+        }
+        return bundles.get(kind, [kind])
+    
     @staticmethod
     def _nmap_target(target: str) -> str:
         parsed = urlparse(target if "://" in target else f"http://{target}")
