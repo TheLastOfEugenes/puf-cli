@@ -561,6 +561,11 @@ class PufApp(cmd2.Cmd):
 
     def _resolve_known_target(self, value: str) -> str:
         raw = value.strip()
+
+        direct_scan_dir = self.base_scan_dir / raw
+        if direct_scan_dir.exists() and direct_scan_dir.is_dir():
+            return raw
+
         candidates = self._target_candidates(raw)
 
         for candidate in candidates:
