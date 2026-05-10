@@ -169,7 +169,7 @@ class PufApp(cmd2.Cmd):
 
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
-        target = self._resolve_row_target(args.target)
+        target = self._resolve_row_target(args.target) if args.target.startswith("r") else self._normalize_target(args.target)
         scan = self._resolve_last_scan(args.scan)
 
         scan_dir = self.base_scan_dir / self._target_folder(target)
@@ -387,14 +387,15 @@ class PufApp(cmd2.Cmd):
         return True
     
     def _store_row_refs(self, rows: list[dict]) -> None:
+        self.row_refs = {}
         for row in rows:
             uid = row.get("uid")
             if uid:
                 self.row_refs[uid] = row
 
     def _resolve_row_target(self, value: str) -> str:
-        if not value.startswith("r"):
-            return self._resolve_last_target(value)
+        if not (value.startswith("r") and value[1:].isdigit()):
+            return self._normalize_target(value)
 
         row = self.row_refs.get(value)
         if not row:
@@ -440,7 +441,8 @@ class PufApp(cmd2.Cmd):
             if kind == "nmap":
                 print_nmap_results(result_file, page=page, page_size=page_size)
             else:
-                print_ffuf_results(result_file, kind, page=page, page_size=page_size)
+                rows = print_ffuf_results(result_file, kind, page=page, page_size=page_size)
+                self._store_row_refs(rows)
             return
 
         self._show_custom_result(target, kind)
