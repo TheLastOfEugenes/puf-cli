@@ -1280,11 +1280,12 @@ class PufApp(cmd2.Cmd):
 
     @staticmethod
     def _target_folder(target: str) -> str:
-        parsed = urlparse(target)
+        parsed = urlparse(target if "://" in target else f"http://{target}")
+        scheme = (parsed.scheme or "http").lower()
         host = parsed.netloc or parsed.path
         path = parsed.path.strip("/")
 
-        folder = host
+        folder = f"{scheme}_{host}"
         if path:
             folder += "_" + path.replace("/", "_")
 
