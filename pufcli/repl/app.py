@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import shutil
 import subprocess
 import time
@@ -9,15 +10,9 @@ from urllib.parse import urlparse
 
 import cmd2
 from rich.text import Text
-import shlex
 
 from pufcli.core.config import PufConfig
-from pufcli.core.filter import (
-    FILTERABLE_KINDS,
-    get_filtered_file,
-    preferred_result_file,
-    run_filter,
-)
+from pufcli.core.filter import FILTERABLE_KINDS, preferred_result_file, run_filter
 from pufcli.core.scanner import is_running, run_ffuf, run_nmap
 from pufcli.core.viewer import print_ffuf_results, print_nmap_results
 
@@ -133,7 +128,7 @@ class PufApp(cmd2.Cmd):
     scan_parser = cmd2.Cmd2ArgumentParser()
     scan_subparsers = scan_parser.add_subparsers(dest="action", required=True)
 
-    scan_list_parser = scan_subparsers.add_parser("list")
+    scan_subparsers.add_parser("list")
 
     scan_show_parser = scan_subparsers.add_parser("show")
     scan_show_parser.add_argument("name")
@@ -175,13 +170,13 @@ class PufApp(cmd2.Cmd):
         self.jobs: dict[int, dict] = {}
         self.next_job_id = 1
 
-        self._refresh_prompt()
-        self.poutput(f"{self.APP_NAME} ready")
-
         self.last_target: str | None = None
         self.last_scan: str | None = None
         self.last_result_kind: str | None = None
         self.row_refs: dict[str, dict] = {}
+
+        self._refresh_prompt()
+        self.poutput(f"{self.APP_NAME} ready")
 
     def preloop(self) -> None:
         self._refresh_prompt()
@@ -192,7 +187,11 @@ class PufApp(cmd2.Cmd):
 
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
-        target = self._resolve_row_target(args.target) if args.target.startswith("r") else self._normalize_target(args.target)
+        target = (
+            self._resolve_row_target(args.target)
+            if args.target.startswith("r")
+            else self._normalize_target(args.target)
+        )
         scan = self._resolve_last_scan(args.scan)
 
         scan_dir = self.base_scan_dir / self._target_folder(target)
@@ -205,7 +204,7 @@ class PufApp(cmd2.Cmd):
                     self.last_scan = kind
                     self._run_builtin_scan(kind, target, scan_dir, background=args.background)
                 return
-            
+
             self._remember_run(target, scan)
 
             if scan in self.BUNDLE_KINDS:
@@ -297,11 +296,11 @@ class PufApp(cmd2.Cmd):
                 return
 
             if args.kind == self.LITERALS["list"]:
-                target = self._resolve_last_target(args.target)
+                target = self._resolve_existing_target(args.target)
                 self._show_results_list(target)
                 return
 
-            target = self._resolve_last_target(args.target)
+            target = self._resolve_existing_target(args.target)
             scan_dir = self._get_scan_dir(target)
 
             if args.kind is None:
@@ -368,19 +367,15 @@ class PufApp(cmd2.Cmd):
             if args.action == "list":
                 self._scan_list()
                 return
-
             if args.action == "show":
                 self._scan_show(args.name)
                 return
-
             if args.action == "set":
                 self._scan_set(args.name, args.command)
                 return
-
             if args.action == "add":
                 self._scan_add(args.name, args.command)
                 return
-
             if args.action == "remove":
                 self._scan_remove(args.name)
                 return
@@ -403,12 +398,7 @@ class PufApp(cmd2.Cmd):
                 return
 
             if args.kind is None:
-                raise ValueError(
-                    "usage: filter list | filter <target|last> list | "
-                    "filter <target|last> <files|dirs|subs|last> "
-                    "[--status ...] [--min-words N] [--max-words N] "
-                    "[--match TEXT] [--exclude TEXT] [--regex REGEX]"
-                )
+                raise ValueError(self._filter_usage())
 
             target = self._resolve_existing_target(args.target)
             kind = self._resolve_last_result_kind(args.kind)
@@ -416,16 +406,30 @@ class PufApp(cmd2.Cmd):
             if kind not in self.FILTERABLE_KINDS:
                 raise ValueError("filter only supports files, dirs, or subs")
 
-            options = {
+            source_file = self._get_result_file(target, kind)
+            scan_dir = self._get_scan_dir(target)
+
+            overrides = {
                 "status": args.status,
                 "min_words": args.min_words,
                 "max_words": args.max_words,
+                "min_lines": args.min_lines,
+                "max_lines": args.max_lines,
+                "min_length": args.min_length,
+                "max_length": args.max_length,
                 "match": args.match,
                 "exclude": args.exclude,
                 "regex": args.regex,
             }
 
-            output_file = self._run_filter(target, kind, mode="custom_filtered", options=options)
+            output_file = run_filter(
+                config=self.config,
+                scan_dir=scan_dir,
+                kind=kind,
+                source_file=source_file,
+                mode="custom_filtered",
+                overrides=overrides,
+            )
             self._remember_result_action(target, kind)
             self.poutput(f"[+] custom filter saved to: {output_file}")
 
@@ -443,9 +447,7 @@ class PufApp(cmd2.Cmd):
 
         for job_id, job in sorted(self.jobs.items()):
             status = self._job_status(job)
-            self.poutput(
-                f"[{job_id}] {job['scan']} {job['target']} -> {job['outfile']} [{status}]"
-            )
+            self.poutput(f"[{job_id}] {job['scan']} {job['target']} -> {job['outfile']} [{status}]")
 
     def do_reload(self, _: str) -> None:
         self.config.reload()
@@ -457,13 +459,12 @@ class PufApp(cmd2.Cmd):
 
     def do_quit(self, _: str) -> bool:
         return True
-    
+
     def _resolve_existing_target(self, target: str) -> str:
         if target == self.LITERALS["last"]:
             if not self.last_target:
                 raise ValueError("no previous target available")
             return self.last_target
-
         return self._resolve_known_target(target)
 
     def _resolve_known_target(self, value: str) -> str:
@@ -520,121 +521,6 @@ class PufApp(cmd2.Cmd):
             rows = print_ffuf_results(path, kind, page=page, page_size=page_size)
             self._store_row_refs(rows)
 
-    def _get_filtered_file(self, target: str, kind: str, mode: str) -> Path:
-        scan_dir = self._get_scan_dir(target)
-        if kind not in self.FILTERABLE_KINDS:
-            raise ValueError(f"filter not supported for kind: {kind}")
-        suffix = self.FILTER_SUFFIXES[mode]
-        return scan_dir / f"{kind}{suffix}"
-
-    def _load_json_results(self, path: Path) -> dict:
-        import json
-
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        if not isinstance(data, dict):
-            raise ValueError("results file is not a JSON object")
-
-        data.setdefault("results", [])
-        if not isinstance(data["results"], list):
-            raise ValueError("results file has invalid 'results'")
-        return data
-
-    def _write_json_results(self, path: Path, data: dict) -> None:
-        import json
-
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-
-    def _parse_csv_ints(self, raw: str | None) -> set[int] | None:
-        if not raw:
-            return None
-        vals = set()
-        for item in raw.split(","):
-            item = item.strip()
-            if not item:
-                continue
-            vals.add(int(item))
-        return vals
-
-    def _row_matches_filter(self, row: dict, options: dict) -> bool:
-        import re
-
-        status = row.get("status")
-        words = row.get("words")
-        url = str(row.get("url", ""))
-        host = str(row.get("host", ""))
-        fuzz = ""
-        input_data = row.get("input", {})
-        if isinstance(input_data, dict):
-            fuzz = str(input_data.get("FUZZ", ""))
-
-        haystack = " ".join([url, host, fuzz])
-
-        allowed_status = self._parse_csv_ints(options.get("status"))
-        if allowed_status is not None:
-            try:
-                if int(status) not in allowed_status:
-                    return False
-            except (TypeError, ValueError):
-                return False
-
-        min_words = options.get("min_words")
-        if min_words is not None:
-            try:
-                if int(words) < min_words:
-                    return False
-            except (TypeError, ValueError):
-                return False
-
-        max_words = options.get("max_words")
-        if max_words is not None:
-            try:
-                if int(words) > max_words:
-                    return False
-            except (TypeError, ValueError):
-                return False
-
-        match = options.get("match")
-        if match and match.lower() not in haystack.lower():
-            return False
-
-        exclude = options.get("exclude")
-        if exclude and exclude.lower() in haystack.lower():
-            return False
-
-        regex = options.get("regex")
-        if regex and not re.search(regex, haystack, re.IGNORECASE):
-            return False
-
-        return True
-
-    def _run_filter(self, target: str, kind: str, mode: str, options: dict | None = None) -> Path:
-        if kind not in self.FILTERABLE_KINDS:
-            raise ValueError("filter only supports files, dirs, or subs")
-
-        source_file = self._get_result_file(target, kind)
-        output_file = self._get_filtered_file(target, kind, mode)
-
-        merged_options = dict(self.DEFAULT_AUTO_FILTER if mode == "filtered" else {})
-        if options:
-            merged_options.update({k: v for k, v in options.items() if v is not None})
-
-        data = self._load_json_results(source_file)
-        results = data.get("results", [])
-        filtered_results = [
-            row for row in results
-            if isinstance(row, dict) and self._row_matches_filter(row, merged_options)
-        ]
-
-        out = dict(data)
-        out["results"] = filtered_results
-        out["total"] = len(filtered_results)
-
-        self._write_json_results(output_file, out)
-        return output_file
-
     def _resolve_row_target(self, value: str) -> str:
         if not (value.startswith("r") and value[1:].isdigit()):
             return self._normalize_target(value)
@@ -669,13 +555,6 @@ class PufApp(cmd2.Cmd):
     def _is_showable_result_name(self, name: str) -> bool:
         return name in self.RESULT_KINDS or name in self.custom_scan_profiles
 
-    def _is_custom_result_file(self, path: Path) -> bool:
-        return (
-            path.is_file()
-            and path.suffix == ".out"
-            and path.stem in self.custom_scan_profiles
-        )
-    
     def _show_single_result(self, target: str, kind: str, page: int, page_size: int) -> None:
         if kind in self.RESULT_KINDS:
             result_file = self._get_result_file(target, kind)
@@ -709,15 +588,6 @@ class PufApp(cmd2.Cmd):
 
         for line in content.splitlines():
             self.poutput(line)
-
-    def _resolve_last_target(self, target: str) -> str:
-        if target != self.LITERALS["last"]:
-            return self._normalize_target(target)
-
-        if not self.last_target:
-            raise ValueError("no previous target available")
-
-        return self.last_target
 
     def _resolve_last_scan(self, scan: str) -> str:
         if scan != self.LITERALS["last"]:
@@ -768,7 +638,16 @@ class PufApp(cmd2.Cmd):
     def _remove_usage(self) -> str:
         kinds = "|".join(self.RESULT_KINDS)
         return f"usage: remove list | remove <target|last> list | remove <target|last> [{kinds}|last|all]"
-    
+
+    def _filter_usage(self) -> str:
+        return (
+            "usage: filter list | filter <target|last> list | "
+            "filter <target|last> <files|dirs|subs|last> "
+            "[--status CSV] [--min-words N] [--max-words N] "
+            "[--min-lines N] [--max-lines N] [--min-length N] [--max-length N] "
+            "[--match TEXT] [--exclude TEXT] [--regex REGEX]"
+        )
+
     def _confirm(self, prompt: str) -> bool:
         while True:
             answer = input(f"{prompt} [y/N]: ").strip().lower()
@@ -914,13 +793,13 @@ class PufApp(cmd2.Cmd):
             raise ValueError(f"unknown custom scan profile: {name}")
 
         outfile = scan_dir / f"{name}.out"
-        cmd = shlex.split(command_template.format(
-            target=target,
-            hostname=self._nmap_target(target),
-            outfile=str(outfile),
-        ))
-
-        import subprocess
+        cmd = shlex.split(
+            command_template.format(
+                target=target,
+                hostname=self._nmap_target(target),
+                outfile=str(outfile),
+            )
+        )
 
         proc = subprocess.Popen(
             cmd,
@@ -984,6 +863,7 @@ class PufApp(cmd2.Cmd):
 
                 job = {
                     "kind": kind,
+                    "target": target,
                     "proc": proc,
                     "outfile": outfile,
                     "cmd": cmd,
@@ -1033,6 +913,18 @@ class PufApp(cmd2.Cmd):
             rc = job["proc"].wait()
             if rc == 0:
                 self.poutput(f"[+] completed: {job['kind']}")
+                if job["kind"] in self.FILTERABLE_KINDS:
+                    try:
+                        filtered_file = run_filter(
+                            config=self.config,
+                            scan_dir=scan_dir,
+                            kind=job["kind"],
+                            source_file=job["outfile"],
+                            mode="filtered",
+                        )
+                        self.poutput(f"[+] auto-filtered -> {filtered_file}")
+                    except Exception as exc:
+                        self.perror(f"[!] auto-filter failed for {job['kind']}: {exc}")
             else:
                 failures.append(job["kind"])
                 self.perror(f"[!] failed: {job['kind']} (code {rc})")
@@ -1198,7 +1090,7 @@ class PufApp(cmd2.Cmd):
         if filename.endswith(".xml"):
             return filename[:-4]
         return filename
-    
+
     def _result_style(self, filename: str) -> str:
         if filename == self.RESULT_FILES["nmap"]:
             return self._style("result_nmap")
@@ -1233,7 +1125,7 @@ class PufApp(cmd2.Cmd):
 
     @staticmethod
     def _nmap_target(target: str) -> str:
-        parsed = urlparse(target if "://" not in target else target)
+        parsed = urlparse(target if "://" in target else f"http://{target}")
         return parsed.hostname or target
 
     def _get_scan_dir(self, target: str) -> Path:
