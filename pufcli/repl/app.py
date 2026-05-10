@@ -167,6 +167,12 @@ class PufApp(cmd2.Cmd):
     filter_parser.add_argument("--exclude")
     filter_parser.add_argument("--regex")
 
+    scan_autofilter_parser = scan_subparsers.add_parser("autofilter")
+    scan_autofilter_parser.add_argument(
+        "mode",
+        choices=("show", "enable", "disable"),
+    )
+
     def __init__(self, config_path: str = "puf.conf") -> None:
         super().__init__(allow_cli_args=False)
         self.config = PufConfig(config_path)
@@ -186,6 +192,8 @@ class PufApp(cmd2.Cmd):
 
         self._refresh_prompt()
         self.poutput(f"{self.APP_NAME} ready")
+
+        self.auto_filter_enabled = True
 
     def preloop(self) -> None:
         self._refresh_prompt()
@@ -390,6 +398,9 @@ class PufApp(cmd2.Cmd):
             if args.action == "remove":
                 self._scan_remove(args.name)
                 return
+            if args.action == "autofilter":
+                self._scan_autofilter(args.mode)
+                return
 
             raise ValueError("unknown scan action")
 
@@ -477,6 +488,24 @@ class PufApp(cmd2.Cmd):
             or name in self.custom_scan_profiles
             or name in self.FILTER_RESULT_ALIASES
         )
+    
+    def _scan_autofilter(self, mode: str) -> None:
+        if mode == "show":
+            state = "enabled" if self.auto_filter_enabled else "disabled"
+            self.poutput(f"[+] auto-filter is {state}")
+            return
+
+        if mode == "enable":
+            self.auto_filter_enabled = True
+            self.poutput("[+] auto-filter enabled")
+            return
+
+        if mode == "disable":
+            self.auto_filter_enabled = False
+            self.poutput("[+] auto-filter disabled")
+            return
+
+        raise ValueError(f"unknown autofilter mode: {mode}")
 
     def _resolve_show_kind_tokens(self, tokens: list[str]) -> str:
         if not tokens:
@@ -533,6 +562,26 @@ class PufApp(cmd2.Cmd):
             return normalized
 
         raise FileNotFoundError(f"target has not been scanned yet: {value}")
+
+    def _should_auto_filter(self, kind: str) -> bool:
+        return self.auto_filter_enabled and kind in self.FILTERABLE_KINDS
+
+    def _run_auto_filter(self, target: str, kind: str, source_file: Path) -> None:
+        if not self._should_auto_filter(kind):
+            return
+
+        try:
+            scan_dir = self._get_scan_dir(target)
+            filtered_file = run_filter(
+                config=self.config,
+                scan_dir=scan_dir,
+                kind=kind,
+                source_file=source_file,
+                mode="filtered",
+            )
+            self.poutput(f"[+] auto-filtered -> {filtered_file}")
+        except Exception as exc:
+            self.perror(f"[!] auto-filter failed for {kind}: {exc}")
 
     def _target_candidates(self, value: str) -> list[str]:
         raw = value.strip()
@@ -849,18 +898,8 @@ class PufApp(cmd2.Cmd):
 
         success = self._stream_foreground_process(kind, proc)
 
-        if success and kind in self.FILTERABLE_KINDS:
-            try:
-                filtered_file = run_filter(
-                    config=self.config,
-                    scan_dir=scan_dir,
-                    kind=kind,
-                    source_file=outfile,
-                    mode="filtered",
-                )
-                self.poutput(f"[+] auto-filtered -> {filtered_file}")
-            except Exception as exc:
-                self._print_error(f"[!] auto-filter failed for {kind}:\n{exc}")
+        if success:
+            self._run_auto_filter(target, kind, outfile)
 
     def _run_custom_scan(
         self,
@@ -994,18 +1033,7 @@ class PufApp(cmd2.Cmd):
             rc = job["proc"].wait()
             if rc == 0:
                 self.poutput(f"[+] completed: {job['kind']}")
-                if job["kind"] in self.FILTERABLE_KINDS:
-                    try:
-                        filtered_file = run_filter(
-                            config=self.config,
-                            scan_dir=scan_dir,
-                            kind=job["kind"],
-                            source_file=job["outfile"],
-                            mode="filtered",
-                        )
-                        self.poutput(f"[+] auto-filtered -> {filtered_file}")
-                    except Exception as exc:
-                        self._print_error(f"[!] auto-filter failed for {job['kind']}:\n{exc}")
+                self._run_auto_filter(job["target"], job["kind"], job["outfile"])
             else:
                 failures.append(job["kind"])
                 self.perror(f"[!] failed: {job['kind']} (code {rc})")
@@ -1068,19 +1096,7 @@ class PufApp(cmd2.Cmd):
 
             if rc == 0:
                 self.poutput(f"[+] background job {job_id} completed: {job['scan']}")
-                if job["scan"] in self.FILTERABLE_KINDS:
-                    try:
-                        scan_dir = self._get_scan_dir(job["target"])
-                        filtered_file = run_filter(
-                            config=self.config,
-                            scan_dir=scan_dir,
-                            kind=job["scan"],
-                            source_file=job["outfile"],
-                            mode="filtered",
-                        )
-                        self.poutput(f"[+] auto-filtered -> {filtered_file}")
-                    except Exception as exc:
-                        self._print_error(f"[!] auto-filter failed for {job['scan']}:\n{exc}")
+                self._run_auto_filter(job["target"], job["scan"], job["outfile"])
             else:
                 self.perror(f"[!] background job {job_id} failed: {job['scan']} (code {rc})")
 
@@ -1100,6 +1116,7 @@ class PufApp(cmd2.Cmd):
 
             if rc == 0:
                 self.poutput(f"[+] completed: {job['kind']}")
+                self._run_auto_filter(job["target"], job["kind"], job["outfile"])
             else:
                 failures.append(job["kind"])
                 self.perror(f"[!] failed: {job['kind']} (code {rc})")
