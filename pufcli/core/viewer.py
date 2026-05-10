@@ -45,7 +45,12 @@ def style_status(status: object) -> str:
         return "magenta"
     return "white"
 
-def print_ffuf_results(path: str | Path, kind: str, page: int = 1, page_size: int = 250) -> None:
+def print_ffuf_results(
+    path: str | Path,
+    kind: str,
+    page: int = 1,
+    page_size: int = 250,
+) -> list[dict[str, Any]]:
     data = load_ffuf_results(path)
     results = data.get("results", [])
 
@@ -60,6 +65,7 @@ def print_ffuf_results(path: str | Path, kind: str, page: int = 1, page_size: in
 
     table = Table(title=f"[bold]{kind} results[/bold]: {Path(path).name}", header_style="bold blue")
     table.add_column("#", style="dim", no_wrap=True)
+    table.add_column("UID", style="white", no_wrap=True)
     table.add_column("Status", no_wrap=True)
     table.add_column("Words", no_wrap=True)
     table.add_column("Length", no_wrap=True)
@@ -71,6 +77,8 @@ def print_ffuf_results(path: str | Path, kind: str, page: int = 1, page_size: in
 
     table.add_column("FUZZ")
 
+    indexed_rows: list[dict[str, Any]] = []
+
     for i, row in enumerate(page_rows, start + 1):
         input_data = row.get("input", {}) if isinstance(row, dict) else {}
         fuzz = input_data.get("FUZZ", "") if isinstance(input_data, dict) else ""
@@ -78,17 +86,31 @@ def print_ffuf_results(path: str | Path, kind: str, page: int = 1, page_size: in
         words = str(row.get("words", "")) if isinstance(row, dict) else ""
         length = str(row.get("length", "")) if isinstance(row, dict) else ""
         value = row.get("host", "") if kind == "subs" else row.get("url", "")
+        uid = f"r{i}"
 
         status_style = style_status(row.get("status", ""))
 
         table.add_row(
             str(i),
+            uid,
             f"[{status_style}]{status}[/{status_style}]",
             f"[dim]{words}[/dim]",
             f"[dim]{length}[/dim]",
             f"[{status_style}]{value}[/{status_style}]",
-#            f"[cyan]{value}[/cyan]",
             str(fuzz),
+        )
+
+        indexed_rows.append(
+            {
+                "uid": uid,
+                "kind": kind,
+                "source_file": str(Path(path)),
+                "row_number": i,
+                "url": row.get("url", "") if isinstance(row, dict) else "",
+                "host": row.get("host", "") if isinstance(row, dict) else "",
+                "fuzz": str(fuzz),
+                "value": value,
+            }
         )
 
     console.print(table)
@@ -99,6 +121,8 @@ def print_ffuf_results(path: str | Path, kind: str, page: int = 1, page_size: in
         f"[dim]Showing {shown_from}-{shown_to} of {total} results "
         f"(page {page}, page-size {page_size})[/dim]"
     )
+
+    return indexed_rows
 
 
 def load_nmap_xml(path: str | Path) -> ET.Element:

@@ -158,6 +158,7 @@ class PufApp(cmd2.Cmd):
         self.last_target: str | None = None
         self.last_scan: str | None = None
         self.last_result_kind: str | None = None
+        self.row_refs: dict[str, dict] = {}
 
     def preloop(self) -> None:
         self._refresh_prompt()
@@ -168,7 +169,7 @@ class PufApp(cmd2.Cmd):
 
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
-        target = self._resolve_last_target(args.target)
+        target = self._resolve_row_target(args.target)
         scan = self._resolve_last_scan(args.scan)
 
         scan_dir = self.base_scan_dir / self._target_folder(target)
@@ -385,6 +386,26 @@ class PufApp(cmd2.Cmd):
     def do_quit(self, _: str) -> bool:
         return True
     
+    def _store_row_refs(self, rows: list[dict]) -> None:
+        for row in rows:
+            uid = row.get("uid")
+            if uid:
+                self.row_refs[uid] = row
+
+    def _resolve_row_target(self, value: str) -> str:
+        if not value.startswith("r"):
+            return self._resolve_last_target(value)
+
+        row = self.row_refs.get(value)
+        if not row:
+            raise ValueError(f"unknown row id: {value}")
+
+        target = row.get("url") or row.get("host") or row.get("value")
+        if not target:
+            raise ValueError(f"row id {value} has no usable target")
+
+        return self._normalize_target(target)
+
     def _iter_showable_result_names(self, target: str) -> list[str]:
         names = []
 
