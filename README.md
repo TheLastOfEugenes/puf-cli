@@ -75,6 +75,7 @@ run <target> path
 run <target> web
 run <target> service
 ```
+
 ![pufcli_run](https://raw.githubusercontent.com/TheLastOfEugenes/pufcli/master/resources/pufcli_run.png)
 
 ## Results display
