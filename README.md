@@ -76,7 +76,7 @@ run <target> web
 run <target> service
 ```
 
-![pufcli_run](https://raw.githubusercontent.com/TheLastOfEugenes/pufcli/master/resources/pufcli_run.png)
+![pufcli_run](https://raw.githubusercontent.com/TheLastOfEugenes/puf-cli/master/resources/pufcli_run.png)
 
 ## Results display
 
@@ -95,11 +95,11 @@ show <target> files
 
 For the subdomains scans' results, the same has been done but the url is not presented, instead is shown the host, which gives us the real url targeted.
 
-![pufcli_show_all](https://raw.githubusercontent.com/TheLastOfEugenes/pufcli/master/resources/pufcli_show_all.png)
+![pufcli_show_all](https://raw.githubusercontent.com/TheLastOfEugenes/puf-cli/master/resources/pufcli_show_all.png)
 
 Finally, the nmap scan is fairly simple, all results are displayed in a nice tab too.
 
-![pufcli_nmap](https://raw.githubusercontent.com/TheLastOfEugenes/pufcli/master/resources/pufcli_nmap.png)
+![pufcli_nmap](https://raw.githubusercontent.com/TheLastOfEugenes/puf-cli/master/resources/pufcli_nmap.png)
 
 For each of these scans, a simple color system has been added to make the output more clean.
 
@@ -107,7 +107,7 @@ For each of these scans, a simple color system has been added to make the output
 
 Each ffuf result display come with a relaunch system. What it means is essentially that when a scan is done and you have displayed the result, a column will show you a unique id per row, you can reuse this id to start a scan on this url. For example here:
 
-![pufcli_row](https://raw.githubusercontent.com/TheLastOfEugenes/pufcli/master/resources/pufcli_row.png)
+![pufcli_row](https://raw.githubusercontent.com/TheLastOfEugenes/puf-cli/master/resources/pufcli_row.png)
 
 A url has been found with the rowid r1, you can then restart the scan on this id using the command
 ```
