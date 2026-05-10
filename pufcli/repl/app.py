@@ -151,7 +151,7 @@ class PufApp(cmd2.Cmd):
 
     filter_parser = cmd2.Cmd2ArgumentParser()
     filter_parser.add_argument("target")
-    filter_parser.add_argument("kind")
+    filter_parser.add_argument("kind", nargs="?")
     filter_parser.add_argument("--status")
     filter_parser.add_argument("--min-words", type=int)
     filter_parser.add_argument("--max-words", type=int)
@@ -242,14 +242,14 @@ class PufApp(cmd2.Cmd):
                 return
 
             if args.kind == self.LITERALS["list"]:
-                target = self._resolve_last_target(args.target)
+                target = self._resolve_existing_target(args.target)
                 self._show_results_list(target)
                 return
 
             if args.kind is None:
                 raise ValueError(self._show_usage())
 
-            target = self._resolve_last_target(args.target)
+            target = self._resolve_existing_target(args.target)
             kind = self._resolve_last_result_kind(args.kind)
 
             if kind == self.LITERALS["all"]:
@@ -281,7 +281,7 @@ class PufApp(cmd2.Cmd):
                 self._show_targets()
                 return
 
-            target = self._resolve_last_target(args.target)
+            target = self._resolve_existing_target(args.target)
             self._show_results_list(target)
 
         except FileNotFoundError as exc:
@@ -393,36 +393,39 @@ class PufApp(cmd2.Cmd):
     @cmd2.with_argparser(filter_parser)
     def do_filter(self, args: argparse.Namespace) -> None:
         try:
-            target = self._resolve_last_target(args.target)
+            if args.target == self.LITERALS["list"] and args.kind is None:
+                self._show_targets()
+                return
+
+            if args.kind == self.LITERALS["list"]:
+                target = self._resolve_existing_target(args.target)
+                self._show_results_list(target)
+                return
+
+            if args.kind is None:
+                raise ValueError(
+                    "usage: filter list | filter <target|last> list | "
+                    "filter <target|last> <files|dirs|subs|last> "
+                    "[--status ...] [--min-words N] [--max-words N] "
+                    "[--match TEXT] [--exclude TEXT] [--regex REGEX]"
+                )
+
+            target = self._resolve_existing_target(args.target)
             kind = self._resolve_last_result_kind(args.kind)
 
             if kind not in self.FILTERABLE_KINDS:
                 raise ValueError("filter only supports files, dirs, or subs")
 
-            scan_dir = self._get_scan_dir(target)
-            source_file = self._get_result_file(target, kind)
-
-            overrides = {
+            options = {
                 "status": args.status,
                 "min_words": args.min_words,
                 "max_words": args.max_words,
-                "min_lines": args.min_lines,
-                "max_lines": args.max_lines,
-                "min_length": args.min_length,
-                "max_length": args.max_length,
                 "match": args.match,
                 "exclude": args.exclude,
                 "regex": args.regex,
             }
 
-            output_file = run_filter(
-                config=self.config,
-                scan_dir=scan_dir,
-                kind=kind,
-                source_file=source_file,
-                mode="custom_filtered",
-                overrides=overrides,
-            )
+            output_file = self._run_filter(target, kind, mode="custom_filtered", options=options)
             self._remember_result_action(target, kind)
             self.poutput(f"[+] custom filter saved to: {output_file}")
 
@@ -455,6 +458,49 @@ class PufApp(cmd2.Cmd):
     def do_quit(self, _: str) -> bool:
         return True
     
+    def _resolve_existing_target(self, target: str) -> str:
+        if target == self.LITERALS["last"]:
+            if not self.last_target:
+                raise ValueError("no previous target available")
+            return self.last_target
+
+        return self._resolve_known_target(target)
+
+    def _resolve_known_target(self, value: str) -> str:
+        raw = value.strip()
+        candidates = self._target_candidates(raw)
+
+        for candidate in candidates:
+            scan_dir = self.base_scan_dir / self._target_folder(candidate)
+            if scan_dir.exists():
+                return candidate
+
+        normalized = self._normalize_target(raw)
+        scan_dir = self.base_scan_dir / self._target_folder(normalized)
+        if scan_dir.exists():
+            return normalized
+
+        raise FileNotFoundError(f"target has not been scanned yet: {value}")
+
+    def _target_candidates(self, value: str) -> list[str]:
+        raw = value.strip()
+        candidates: list[str] = []
+
+        if raw.startswith("http://") or raw.startswith("https://"):
+            candidates.append(raw)
+        else:
+            candidates.append(raw)
+            candidates.append(f"http://{raw}")
+            candidates.append(f"https://{raw}")
+
+        seen = set()
+        ordered = []
+        for item in candidates:
+            if item not in seen:
+                seen.add(item)
+                ordered.append(item)
+        return ordered
+
     def _store_row_refs(self, rows: list[dict]) -> None:
         self.row_refs = {}
         for row in rows:
