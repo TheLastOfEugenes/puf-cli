@@ -263,7 +263,7 @@ class PufApp(cmd2.Cmd):
             kind = self._resolve_show_kind_tokens(kind_tokens)
 
             if kind == self.LITERALS["all"]:
-                ordered = ["files", "dirs", "subs", "nmap"]
+                ordered = ["nmap", "files", "dirs", "subs"]
                 for result_kind in ordered:
                     try:
                         actual_kind, result_file = self._preferred_show_kind_for_all(target, result_kind)
@@ -282,7 +282,7 @@ class PufApp(cmd2.Cmd):
         except FileNotFoundError as exc:
             self.perror(f"[!] {exc}")
         except Exception as exc:
-            self.perror(f"[!] failed to show results: {exc}")
+            self._print_error(f"[!] failed to show results:\n{exc}")
 
     @cmd2.with_argparser(list_parser)
     def do_list(self, args: argparse.Namespace) -> None:
@@ -370,7 +370,7 @@ class PufApp(cmd2.Cmd):
         except FileNotFoundError as exc:
             self.perror(f"[!] {exc}")
         except Exception as exc:
-            self.perror(f"[!] failed to remove: {exc}")
+            self._print_error(f"failed to remove:\n{exc}")
 
     @cmd2.with_argparser(scan_parser)
     def do_scan(self, args: argparse.Namespace) -> None:
@@ -447,7 +447,7 @@ class PufApp(cmd2.Cmd):
         except FileNotFoundError as exc:
             self.perror(f"[!] {exc}")
         except Exception as exc:
-            self.perror(f"[!] filter failed: {exc}")
+            self._print_error(f"filter failed:\n{exc}")
 
     def do_jobs(self, _: str) -> None:
         self._prune_finished_jobs()
@@ -692,25 +692,42 @@ class PufApp(cmd2.Cmd):
     def _refresh_prompt(self) -> None:
         self.prompt = self._build_prompt()
 
+    def _print_error(self, message: str) -> None:
+        lines = str(message).splitlines() or [str(message)]
+        if not lines:
+            return
+        self.perror(f"[!] {lines[0]}")
+        for line in lines[1:]:
+            self.perror(f"    {line}")
+
     def _show_usage(self) -> str:
-        return (
-            "usage: show list | show <target|last> list | "
-            "show <target|last> <kind|last|all> | "
-            "show <target|last> [custom] filtered <files|dirs|subs>"
-        )
+        return "\n".join([
+            "usage:",
+            "  show list",
+            "  show <target|last> list",
+            "  show <target|last> <kind|last|all>",
+            "  show <target|last> [custom] filtered <files|dirs|subs>",
+        ])
 
     def _remove_usage(self) -> str:
         kinds = "|".join(self.RESULT_KINDS)
-        return f"usage: remove list | remove <target|last> list | remove <target|last> [{kinds}|last|all]"
+        return "\n".join([
+            "usage:",
+            "  remove list",
+            "  remove <target|last> list",
+            f"  remove <target|last> [{kinds}|last|all]",
+        ])
 
     def _filter_usage(self) -> str:
-        return (
-            "usage: filter list | filter <target|last> list | "
-            "filter <target|last> <files|dirs|subs|last> "
-            "[--status CSV] [--min-words N] [--max-words N] "
-            "[--min-lines N] [--max-lines N] [--min-length N] [--max-length N] "
-            "[--match TEXT] [--exclude TEXT] [--regex REGEX]"
-        )
+        return "\n".join([
+            "usage:",
+            "  filter list",
+            "  filter <target|last> list",
+            "  filter <target|last> <files|dirs|subs|last> \\",
+            "    [--status CSV] [--min-words N] [--max-words N] \\",
+            "    [--min-lines N] [--max-lines N] [--min-length N] [--max-length N] \\",
+            "    [--match TEXT] [--exclude TEXT] [--regex REGEX]",
+        ])
 
     def _confirm(self, prompt: str) -> bool:
         while True:
@@ -843,7 +860,7 @@ class PufApp(cmd2.Cmd):
                 )
                 self.poutput(f"[+] auto-filtered -> {filtered_file}")
             except Exception as exc:
-                self.perror(f"[!] auto-filter failed for {kind}: {exc}")
+                self._print_error(f"[!] auto-filter failed for {kind}:\n{exc}")
 
     def _run_custom_scan(
         self,
@@ -938,7 +955,7 @@ class PufApp(cmd2.Cmd):
 
             except Exception as exc:
                 failures.append(kind)
-                self.perror(f"[!] failed to launch {kind}: {exc}")
+                self._print_error(f"[!] failed to launch {kind}:\n{exc}")
 
         if background:
             for job in jobs:
@@ -988,7 +1005,7 @@ class PufApp(cmd2.Cmd):
                         )
                         self.poutput(f"[+] auto-filtered -> {filtered_file}")
                     except Exception as exc:
-                        self.perror(f"[!] auto-filter failed for {job['kind']}: {exc}")
+                        self._print_error(f"[!] auto-filter failed for {job['kind']}:\n{exc}")
             else:
                 failures.append(job["kind"])
                 self.perror(f"[!] failed: {job['kind']} (code {rc})")
@@ -1063,7 +1080,7 @@ class PufApp(cmd2.Cmd):
                         )
                         self.poutput(f"[+] auto-filtered -> {filtered_file}")
                     except Exception as exc:
-                        self.perror(f"[!] auto-filter failed for {job['scan']}: {exc}")
+                        self._print_error(f"[!] auto-filter failed for {job['scan']}:\n{exc}")
             else:
                 self.perror(f"[!] background job {job_id} failed: {job['scan']} (code {rc})")
 
