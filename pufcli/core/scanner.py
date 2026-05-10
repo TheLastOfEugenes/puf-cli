@@ -30,21 +30,33 @@ def get_outfile(scan_dir: str | Path, kind: str) -> Path:
     raise ValueError(f"Unknown scan kind: {kind}")
 
 
-def build_nmap_command(target: str, config, scan_dir: str | Path) -> tuple[list[str], Path]:
+def build_nmap_command(
+    target: str,
+    config,
+    scan_dir: str | Path,
+    template_override: str | None = None,
+) -> tuple[list[str], Path]:
     outfile = get_outfile(scan_dir, "nmap")
-    template = config.get_command("nmap")
+    template = template_override or config.get_command("nmap")
 
     if not template:
         raise ValueError("nmap command not set in puf.conf")
 
     cmd = template.format(
         target=target,
+        hostname=get_hostname(target),
         outfile=str(outfile),
     )
     return shlex.split(cmd), outfile
 
 
-def build_ffuf_command(target: str, kind: str, config, scan_dir: str | Path) -> tuple[list[str], Path]:
+def build_ffuf_command(
+    target: str,
+    kind: str,
+    config,
+    scan_dir: str | Path,
+    template_override: str | None = None,
+) -> tuple[list[str], Path]:
     if kind not in {"files", "dirs", "subs"}:
         raise ValueError(f"Invalid ffuf kind: {kind}")
 
@@ -52,10 +64,10 @@ def build_ffuf_command(target: str, kind: str, config, scan_dir: str | Path) -> 
     hostname = get_hostname(target)
 
     if kind == "subs":
-        template = config.get_command("fuzz_subs")
+        template = template_override or config.get_command("fuzz_subs")
         wordlist = config.get_wordlist("subs")
     else:
-        template = config.get_command("fuzz")
+        template = template_override or config.get_command("fuzz")
         wordlist = config.get_wordlist(kind)
 
     if not template:
@@ -100,8 +112,15 @@ def run_nmap(
     config,
     scan_dir: str | Path,
     verbosity: str = "normal",
+    template_override: str | None = None,
 ) -> tuple[subprocess.Popen, Path, list[str]]:
-    cmd, outfile = build_nmap_command(target, config, scan_dir)
+    cmd, outfile = build_nmap_command(
+        target,
+        config,
+        scan_dir,
+        template_override=template_override,
+    )
+
     proc = subprocess.Popen(cmd, **_popen_kwargs(verbosity))
     return proc, outfile, cmd
 
@@ -112,8 +131,16 @@ def run_ffuf(
     config,
     scan_dir: str | Path,
     verbosity: str = "normal",
+    template_override: str | None = None,
 ) -> tuple[subprocess.Popen, Path, list[str]]:
-    cmd, outfile = build_ffuf_command(target, kind, config, scan_dir)
+    cmd, outfile = build_ffuf_command(
+        target,
+        kind,
+        config,
+        scan_dir,
+        template_override=template_override,
+    )
+
     proc = subprocess.Popen(cmd, **_popen_kwargs(verbosity))
     return proc, outfile, cmd
 

@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 import cmd2
 from rich.text import Text
+import shlex
 
 from pufcli.core.config import PufConfig
 from pufcli.core.scanner import is_running, run_ffuf, run_nmap
@@ -51,7 +52,8 @@ class PufApp(cmd2.Cmd):
 
     RESULT_KINDS = ("nmap", "files", "dirs", "subs")
     BUNDLE_KINDS = ("path", "web", "service")
-    RUN_KINDS = RESULT_KINDS + BUNDLE_KINDS
+    BUILTIN_SCAN_NAMES = RESULT_KINDS + BUNDLE_KINDS
+    RUNNABLE_SCAN_NAMES = BUILTIN_SCAN_NAMES
 
     BUNDLES = {
         "path": ["files", "dirs"],
@@ -85,11 +87,23 @@ class PufApp(cmd2.Cmd):
         "subs_custom_filtered.json": "custom filtered subs",
     }
 
+    BUILTIN_PROFILE_KEYS = {
+        "nmap": "nmap",
+        "files": "fuzz",
+        "dirs": "fuzz",
+        "subs": "fuzz_subs",
+    }
+
     intro = INTRO_TEXT
 
     run_parser = cmd2.Cmd2ArgumentParser()
     run_parser.add_argument("target")
-    run_parser.add_argument("kind", choices=list(RUN_KINDS))
+    run_parser.add_argument("scan")
+    run_parser.add_argument(
+        "--background",
+        action="store_true",
+        help="run the scan in background",
+    )
 
     show_parser = cmd2.Cmd2ArgumentParser()
     show_parser.add_argument("target")
@@ -101,14 +115,40 @@ class PufApp(cmd2.Cmd):
     list_parser.add_argument("target", nargs="?")
 
     remove_parser = cmd2.Cmd2ArgumentParser()
-    remove_parser.add_argument("arg1")
-    remove_parser.add_argument("arg2", nargs="?")
+    remove_parser.add_argument("target")
+    remove_parser.add_argument("kind", nargs="?")
+
+    scan_parser = cmd2.Cmd2ArgumentParser()
+    scan_subparsers = scan_parser.add_subparsers(dest="action", required=True)
+
+    scan_list_parser = scan_subparsers.add_parser("list")
+
+    scan_show_parser = scan_subparsers.add_parser("show")
+    scan_show_parser.add_argument("name")
+
+    scan_set_parser = scan_subparsers.add_parser("set")
+    scan_set_parser.add_argument("name")
+    scan_set_parser.add_argument("command")
+
+    scan_add_parser = scan_subparsers.add_parser("add")
+    scan_add_parser.add_argument("name")
+    scan_add_parser.add_argument("command")
+
+    scan_remove_parser = scan_subparsers.add_parser("remove")
+    scan_remove_parser.add_argument("name")
 
     def __init__(self, config_path: str = "puf.conf") -> None:
         super().__init__(allow_cli_args=False)
         self.config = PufConfig(config_path)
         self.base_scan_dir = Path(self.BASE_SCAN_DIR)
         self.continuation_prompt = self.CONTINUATION_PROMPT
+
+        self.builtin_scan_profiles = self._load_builtin_scan_profiles()
+        self.custom_scan_profiles: dict[str, str] = {}
+
+        self.jobs: dict[int, dict] = {}
+        self.next_job_id = 1
+
         self._refresh_prompt()
         self.poutput(f"{self.APP_NAME} ready")
 
@@ -122,14 +162,25 @@ class PufApp(cmd2.Cmd):
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
         target = self._normalize_target(args.target)
+        scan = args.scan
         scan_dir = self.base_scan_dir / self._target_folder(target)
         scan_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            if self._is_bundle_kind(args.kind):
-                self._run_bundle(args.kind, target, scan_dir)
-            else:
-                self._run_single(args.kind, target, scan_dir)
+            if scan in self.BUNDLE_KINDS:
+                self._run_bundle(scan, target, scan_dir, background=args.background)
+                return
+
+            if scan in self.RESULT_KINDS:
+                self._run_builtin_scan(scan, target, scan_dir, background=args.background)
+                return
+
+            if scan in self.custom_scan_profiles:
+                self._run_custom_scan(scan, target, scan_dir, background=args.background)
+                return
+
+            raise ValueError(f"unknown scan: {scan}")
+
         except KeyboardInterrupt:
             self.perror("[!] interrupted")
         except Exception as exc:
@@ -194,19 +245,19 @@ class PufApp(cmd2.Cmd):
     @cmd2.with_argparser(remove_parser)
     def do_remove(self, args: argparse.Namespace) -> None:
         try:
-            if args.arg1 == self.LITERALS["list"] and args.arg2 is None:
+            if args.target == self.LITERALS["list"] and args.kind is None:
                 self._show_targets()
                 return
 
-            if args.arg2 == self.LITERALS["list"]:
-                target = self._normalize_target(args.arg1)
+            if args.kind == self.LITERALS["list"]:
+                target = self._normalize_target(args.target)
                 self._show_results_list(target)
                 return
 
-            target = self._normalize_target(args.arg1)
+            target = self._normalize_target(args.target)
             scan_dir = self._get_scan_dir(target)
 
-            if args.arg2 is None:
+            if args.kind is None:
                 label = self._target_folder(target)
                 if not self._confirm(f"Remove target '{label}'?"):
                     self.poutput("[+] cancelled")
@@ -216,11 +267,11 @@ class PufApp(cmd2.Cmd):
                 self.poutput(f"[+] removed target: {label}")
                 return
 
-            result = args.arg2
-            if result not in self.RESULT_KINDS:
+            kind = args.kind
+            if kind not in self.RESULT_KINDS:
                 raise ValueError(self._remove_usage())
 
-            result_file = self._get_result_file(target, result)
+            result_file = self._get_result_file(target, kind)
 
             if not self._confirm(
                 f"Remove file '{result_file.name}' for target '{self._target_folder(target)}'?"
@@ -229,7 +280,7 @@ class PufApp(cmd2.Cmd):
                 return
 
             result_file.unlink()
-            self.poutput(f"[+] removed result: {result} for {self._target_folder(target)}")
+            self.poutput(f"[+] removed result: {kind} for {self._target_folder(target)}")
 
             if not any(scan_dir.iterdir()):
                 scan_dir.rmdir()
@@ -240,8 +291,50 @@ class PufApp(cmd2.Cmd):
         except Exception as exc:
             self.perror(f"[!] failed to remove: {exc}")
 
+    @cmd2.with_argparser(scan_parser)
+    def do_scan(self, args: argparse.Namespace) -> None:
+        try:
+            if args.action == "list":
+                self._scan_list()
+                return
+
+            if args.action == "show":
+                self._scan_show(args.name)
+                return
+
+            if args.action == "set":
+                self._scan_set(args.name, args.command)
+                return
+
+            if args.action == "add":
+                self._scan_add(args.name, args.command)
+                return
+
+            if args.action == "remove":
+                self._scan_remove(args.name)
+                return
+
+            raise ValueError("unknown scan action")
+
+        except Exception as exc:
+            self.perror(f"[!] scan command failed: {exc}")
+
+    def do_jobs(self, _: str) -> None:
+        self._prune_finished_jobs()
+
+        if not self.jobs:
+            self.poutput("No background jobs")
+            return
+
+        for job_id, job in sorted(self.jobs.items()):
+            status = self._job_status(job)
+            self.poutput(
+                f"[{job_id}] {job['scan']} {job['target']} -> {job['outfile']} [{status}]"
+            )
+
     def do_reload(self, _: str) -> None:
         self.config.reload()
+        self.builtin_scan_profiles = self._load_builtin_scan_profiles()
         self.poutput("[+] config reloaded")
 
     def do_exit(self, _: str) -> bool:
@@ -269,7 +362,7 @@ class PufApp(cmd2.Cmd):
 
     def _show_usage(self) -> str:
         return "usage: show list | show <target> list | show <target> <kind>"
-    
+
     def _remove_usage(self) -> str:
         kinds = "|".join(self.RESULT_KINDS)
         return f"usage: remove list | remove <target> list | remove <target> [{kinds}]"
@@ -283,13 +376,96 @@ class PufApp(cmd2.Cmd):
                 return True
             self.poutput("Please answer with y or N.")
 
-    def _run_single(self, kind: str, target: str, scan_dir: Path) -> None:
+    def _load_builtin_scan_profiles(self) -> dict[str, str]:
+        profiles: dict[str, str] = {}
+
+        for scan_name, config_key in self.BUILTIN_PROFILE_KEYS.items():
+            command = self.config.get_command(config_key)
+            if command:
+                profiles[scan_name] = command
+
+        return profiles
+
+    def _all_scan_profiles(self) -> dict[str, str]:
+        profiles = dict(self.builtin_scan_profiles)
+        profiles.update(self.custom_scan_profiles)
+        return profiles
+
+    def _scan_list(self) -> None:
+        profiles = self._all_scan_profiles()
+
+        if not profiles:
+            self.poutput("No scan profiles available")
+            return
+
+        self.poutput(Text("Available scan profiles", style=self._style("info")))
+
+        for name in sorted(profiles):
+            origin = "built-in" if name in self.builtin_scan_profiles else "custom"
+            line = Text()
+            line.append("- ", style=self._style("target"))
+            line.append(name, style=self._style("target"))
+            line.append(f" ({origin})", style=self._style("muted"))
+            self.poutput(line)
+
+    def _scan_show(self, name: str) -> None:
+        profiles = self._all_scan_profiles()
+        if name not in profiles:
+            raise ValueError(f"unknown scan profile: {name}")
+        self.poutput(f"{name}: {profiles[name]}")
+
+    def _scan_set(self, name: str, command: str) -> None:
+        if name in self.custom_scan_profiles:
+            self.custom_scan_profiles[name] = command
+            self.poutput(f"[+] updated custom scan profile: {name}")
+            return
+
+        if name in self.builtin_scan_profiles:
+            self.builtin_scan_profiles[name] = command
+            self.poutput(f"[+] updated built-in scan profile: {name}")
+            return
+
+        raise ValueError(f"unknown scan profile: {name}")
+
+    def _scan_add(self, name: str, command: str) -> None:
+        if name in self.BUILTIN_SCAN_NAMES or name in self.custom_scan_profiles:
+            raise ValueError(f"scan profile already exists: {name}")
+
+        self.custom_scan_profiles[name] = command
+        self.poutput(f"[+] added custom scan profile: {name}")
+
+    def _scan_remove(self, name: str) -> None:
+        if name in self.builtin_scan_profiles:
+            raise ValueError("cannot remove built-in scan profiles")
+
+        if name not in self.custom_scan_profiles:
+            raise ValueError(f"unknown custom scan profile: {name}")
+
+        if not self._confirm(f"Remove custom scan profile '{name}'?"):
+            self.poutput("[+] cancelled")
+            return
+
+        del self.custom_scan_profiles[name]
+        self.poutput(f"[+] removed custom scan profile: {name}")
+
+    def _run_builtin_scan(
+        self,
+        kind: str,
+        target: str,
+        scan_dir: Path,
+        background: bool = False,
+    ) -> None:
+        template = self.builtin_scan_profiles.get(kind)
+        if not template:
+            raise ValueError(f"no command configured for scan: {kind}")
+
         if kind == "nmap":
             proc, outfile, cmd = run_nmap(
                 self._nmap_target(target),
                 self.config,
                 scan_dir,
-                verbosity="normal",
+                verbosity="silent" if background else "normal",
+                template_override=template,
             )
         else:
             proc, outfile, cmd = run_ffuf(
@@ -297,38 +473,81 @@ class PufApp(cmd2.Cmd):
                 kind,
                 self.config,
                 scan_dir,
-                verbosity="normal",
+                verbosity="silent" if background else "normal",
+                template_override=template,
             )
 
         self.poutput(f"[+] started {kind} scan")
         self.poutput(f"CMD: {' '.join(cmd)}")
         self.poutput(f"OUTFILE: {outfile}")
 
-        if proc.stdout:
-            for line in iter(proc.stdout.readline, ""):
-                if line == "" and proc.poll() is not None:
-                    break
-                line = line.rstrip()
-                if line:
-                    self.poutput(line)
+        if background:
+            self._register_job(kind, target, proc, outfile, cmd)
+            return
 
-        proc.wait()
+        self._stream_foreground_process(kind, proc)
 
-        if proc.returncode == 0:
-            self.poutput(f"[+] completed: {kind}")
-        else:
-            self.perror(f"[!] scan failed with code {proc.returncode}")
+    def _run_custom_scan(
+        self,
+        name: str,
+        target: str,
+        scan_dir: Path,
+        background: bool = False,
+    ) -> None:
+        command_template = self.custom_scan_profiles.get(name)
+        if not command_template:
+            raise ValueError(f"unknown custom scan profile: {name}")
 
-    def _run_bundle(self, bundle_kind: str, target: str, scan_dir: Path) -> None:
+        outfile = scan_dir / f"{name}.out"
+        cmd = shlex.split(command_template.format(
+            target=target,
+            hostname=self._nmap_target(target),
+            outfile=str(outfile),
+        ))
+
+        import subprocess
+
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL if background else subprocess.PIPE,
+            stderr=subprocess.DEVNULL if background else subprocess.STDOUT,
+            text=True,
+            bufsize=1 if not background else -1,
+        )
+
+        self.poutput(f"[+] started custom scan {name}")
+        self.poutput(f"CMD: {' '.join(cmd)}")
+        self.poutput(f"OUTFILE: {outfile}")
+
+        if background:
+            self._register_job(name, target, proc, outfile, cmd)
+            return
+
+        self._stream_foreground_process(name, proc)
+
+    def _run_bundle(
+        self,
+        bundle_kind: str,
+        target: str,
+        scan_dir: Path,
+        background: bool = False,
+    ) -> None:
         kinds = self._expand_run_kind(bundle_kind)
         self.poutput(f"[+] starting {bundle_kind} bundle for {target}")
         self.poutput(f"[+] bundle plan: {', '.join(kinds)}")
 
         jobs: list[dict] = []
         failures: list[str] = []
-        visible_kind = kinds[-1] if kinds and kinds[-1] == "nmap" else None
+        visible_kind = None if background else (kinds[-1] if kinds and kinds[-1] == "nmap" else None)
 
         for kind in kinds:
+            template = self.builtin_scan_profiles.get(kind)
+            if not template:
+                failures.append(kind)
+                self.perror(f"[!] failed to launch {kind}: no command configured")
+                continue
+
             try:
                 if kind == "nmap":
                     proc, outfile, cmd = run_nmap(
@@ -336,6 +555,7 @@ class PufApp(cmd2.Cmd):
                         self.config,
                         scan_dir,
                         verbosity="normal" if kind == visible_kind else "silent",
+                        template_override=template,
                     )
                 else:
                     proc, outfile, cmd = run_ffuf(
@@ -343,23 +563,29 @@ class PufApp(cmd2.Cmd):
                         kind,
                         self.config,
                         scan_dir,
-                        verbosity="silent",
+                        verbosity="silent" if background or kind != visible_kind else "normal",
+                        template_override=template,
                     )
 
-                jobs.append(
-                    {
-                        "kind": kind,
-                        "proc": proc,
-                        "outfile": outfile,
-                        "cmd": cmd,
-                        "reported": False,
-                    }
-                )
+                job = {
+                    "kind": kind,
+                    "proc": proc,
+                    "outfile": outfile,
+                    "cmd": cmd,
+                    "reported": False,
+                }
+                jobs.append(job)
                 self.poutput(f"[+] launched {kind}")
 
             except Exception as exc:
                 failures.append(kind)
                 self.perror(f"[!] failed to launch {kind}: {exc}")
+
+        if background:
+            for job in jobs:
+                self._register_job(job["kind"], target, job["proc"], job["outfile"], job["cmd"])
+            self.poutput(f"[+] bundle {bundle_kind} launched in background")
+            return
 
         visible_job = next((job for job in jobs if job["kind"] == visible_kind), None)
 
@@ -402,6 +628,48 @@ class PufApp(cmd2.Cmd):
             self.perror(f"[!] bundle {bundle_kind} completed with failures: {failed}")
         else:
             self.poutput(f"[+] bundle {bundle_kind} completed")
+
+    def _stream_foreground_process(self, name: str, proc) -> None:
+        if proc.stdout:
+            for line in iter(proc.stdout.readline, ""):
+                if line == "" and proc.poll() is not None:
+                    break
+                line = line.rstrip()
+                if line:
+                    self.poutput(line)
+
+        proc.wait()
+
+        if proc.returncode == 0:
+            self.poutput(f"[+] completed: {name}")
+        else:
+            self.perror(f"[!] scan failed with code {proc.returncode}")
+
+    def _register_job(self, scan: str, target: str, proc, outfile: Path, cmd: list[str]) -> int:
+        job_id = self.next_job_id
+        self.next_job_id += 1
+
+        self.jobs[job_id] = {
+            "scan": scan,
+            "target": target,
+            "proc": proc,
+            "outfile": outfile,
+            "cmd": cmd,
+        }
+
+        self.poutput(f"[+] job {job_id} started in background: {scan} -> {outfile}")
+        return job_id
+
+    def _job_status(self, job: dict) -> str:
+        rc = job["proc"].poll()
+        if rc is None:
+            return "running"
+        if rc == 0:
+            return "done"
+        return f"failed ({rc})"
+
+    def _prune_finished_jobs(self) -> None:
+        pass
 
     def _report_finished_jobs(self, jobs: list[dict], failures: list[str]) -> None:
         for job in jobs:
@@ -475,10 +743,6 @@ class PufApp(cmd2.Cmd):
         return list(cls.BUNDLES.get(kind, [kind]))
 
     @classmethod
-    def _is_bundle_kind(cls, kind: str) -> bool:
-        return kind in cls.BUNDLE_KINDS
-
-    @classmethod
     def _result_display_name(cls, filename: str) -> str:
         if filename in cls.RESULT_DISPLAY_NAMES:
             return cls.RESULT_DISPLAY_NAMES[filename]
@@ -520,7 +784,7 @@ class PufApp(cmd2.Cmd):
 
     @staticmethod
     def _nmap_target(target: str) -> str:
-        parsed = urlparse(target if "://" in target else f"http://{target}")
+        parsed = urlparse(target if "://" not in target else target)
         return parsed.hostname or target
 
     def _get_scan_dir(self, target: str) -> Path:
