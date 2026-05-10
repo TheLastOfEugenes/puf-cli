@@ -38,10 +38,11 @@ class PufApp(cmd2.Cmd):
         "warning": "yellow",
         "error": "red",
         "muted": "dim",
-        "target": "gold1",
-        "result": "bright_magenta",
-        "result_filtered": "magenta",
-        "result_custom": "deep_pink4",
+        "target": "bright_cyan",
+        "result_ffuf": "white",
+        "result_filtered": "bright_magenta",
+        "result_custom": "dark_orange",
+        "result_nmap": "green",
     }
 
     LITERALS = {
@@ -488,12 +489,14 @@ class PufApp(cmd2.Cmd):
         return filename
 
     def _result_style(self, filename: str) -> str:
+        if filename == self.RESULT_FILES["nmap"]:
+            return self._style("result_nmap")
         if filename.endswith("_cf.json") or filename.endswith("_custom_filtered.json"):
             return self._style("result_custom")
         if filename.endswith("_f.json") or filename.endswith("_filtered.json"):
             return self._style("result_filtered")
-        if filename.endswith(".json") or filename.endswith(".xml"):
-            return self._style("result")
+        if filename.endswith(".json"):
+            return self._style("result_ffuf")
         return self._style("muted")
 
     @staticmethod
