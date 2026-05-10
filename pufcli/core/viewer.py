@@ -110,6 +110,7 @@ def print_ffuf_results(
                 "host": row.get("host", "") if isinstance(row, dict) else "",
                 "fuzz": str(fuzz),
                 "value": value,
+                "target_value": row.get("host", "") if kind == "subs" else row.get("url", ""),
             }
         )
 

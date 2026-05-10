@@ -401,7 +401,7 @@ class PufApp(cmd2.Cmd):
         if not row:
             raise ValueError(f"unknown row id: {value}")
 
-        target = row.get("url") or row.get("host") or row.get("value")
+        target = row.get("target_value") or row.get("url") or row.get("host") or row.get("value")
         if not target:
             raise ValueError(f"row id {value} has no usable target")
 
