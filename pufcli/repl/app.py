@@ -120,6 +120,11 @@ class PufApp(cmd2.Cmd):
         action="store_true",
         help="run the scan in background",
     )
+    run_parser.add_argument(
+        "--silent",
+        action="store_true",
+        help="run without streaming command output",
+    )
 
     show_parser = cmd2.Cmd2ArgumentParser()
     show_parser.add_argument("target")
@@ -204,11 +209,15 @@ class PufApp(cmd2.Cmd):
 
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
-        target = (
-            self._resolve_row_target(args.target)
-            if args.target.startswith("r")
-            else self._normalize_target(args.target)
-        )
+        try:
+            target = (
+                self._resolve_row_target(args.target)
+                if args.target.startswith("r")
+                else self._resolve_known_target(args.target)
+            )
+        except FileNotFoundError:
+            target = self._normalize_target(args.target)
+
         scan = self._resolve_last_scan(args.scan)
 
         scan_dir = self.base_scan_dir / self._target_folder(target)
@@ -219,21 +228,45 @@ class PufApp(cmd2.Cmd):
                 self.last_target = target
                 for kind in self.RESULT_KINDS:
                     self.last_scan = kind
-                    self._run_builtin_scan(kind, target, scan_dir, background=args.background)
+                    self._run_builtin_scan(
+                        kind,
+                        target,
+                        scan_dir,
+                        background=args.background,
+                        silent=args.silent,
+                    )
                 return
 
             self._remember_run(target, scan)
 
             if scan in self.BUNDLE_KINDS:
-                self._run_bundle(scan, target, scan_dir, background=args.background)
+                self._run_bundle(
+                    scan,
+                    target,
+                    scan_dir,
+                    background=args.background,
+                    silent=args.silent,
+                )
                 return
 
             if scan in self.RESULT_KINDS:
-                self._run_builtin_scan(scan, target, scan_dir, background=args.background)
+                self._run_builtin_scan(
+                    scan,
+                    target,
+                    scan_dir,
+                    background=args.background,
+                    silent=args.silent,
+                )
                 return
 
             if scan in self.custom_scan_profiles:
-                self._run_custom_scan(scan, target, scan_dir, background=args.background)
+                self._run_custom_scan(
+                    scan,
+                    target,
+                    scan_dir,
+                    background=args.background,
+                    silent=args.silent,
+                )
                 return
 
             raise ValueError(f"unknown scan: {scan}")
@@ -884,19 +917,21 @@ class PufApp(cmd2.Cmd):
         target: str,
         scan_dir: Path,
         background: bool = False,
+        silent: bool = False,
     ) -> None:
         template = self.builtin_scan_profiles.get(kind)
         if not template:
             raise ValueError(f"no command configured for scan: {kind}")
 
         started_at = time.monotonic()
+        verbosity = "silent" if (background or silent) else "normal"
 
         if kind == "nmap":
             proc, outfile, cmd = run_nmap(
                 self._nmap_target(target),
                 self.config,
                 scan_dir,
-                verbosity="silent" if background else "normal",
+                verbosity=verbosity,
                 template_override=template,
             )
         else:
@@ -905,7 +940,7 @@ class PufApp(cmd2.Cmd):
                 kind,
                 self.config,
                 scan_dir,
-                verbosity="silent" if background else "normal",
+                verbosity=verbosity,
                 template_override=template,
             )
 
@@ -917,20 +952,15 @@ class PufApp(cmd2.Cmd):
             self._register_job(kind, target, proc, outfile, cmd, started_at=started_at)
             return
 
-        success = self._stream_foreground_process(kind, proc, started_at=started_at)
+        success = self._stream_foreground_process(
+            kind,
+            proc,
+            started_at=started_at,
+            quiet=silent,
+        )
 
-        if success and kind in self.FILTERABLE_KINDS:
-            try:
-                filtered_file = run_filter(
-                    config=self.config,
-                    scan_dir=scan_dir,
-                    kind=kind,
-                    source_file=outfile,
-                    mode="filtered",
-                )
-                self.poutput(f"[+] auto-filtered -> {filtered_file}")
-            except Exception as exc:
-                self.perror(f"[!] auto-filter failed for {kind}: {exc}")
+        if success:
+            self._run_auto_filter(target, kind, outfile)
 
     def _run_custom_scan(
         self,
@@ -938,6 +968,7 @@ class PufApp(cmd2.Cmd):
         target: str,
         scan_dir: Path,
         background: bool = False,
+        silent: bool = False,
     ) -> None:
         command_template = self.custom_scan_profiles.get(name)
         if not command_template:
@@ -953,14 +984,15 @@ class PufApp(cmd2.Cmd):
         )
 
         started_at = time.monotonic()
+        quiet = background or silent
 
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL if background else subprocess.PIPE,
-            stderr=subprocess.DEVNULL if background else subprocess.STDOUT,
+            stdout=subprocess.DEVNULL if quiet else subprocess.PIPE,
+            stderr=subprocess.DEVNULL if quiet else subprocess.STDOUT,
             text=True,
-            bufsize=1 if not background else -1,
+            bufsize=-1 if quiet else 1,
         )
 
         self.poutput(f"[+] started custom scan {name}")
@@ -971,7 +1003,12 @@ class PufApp(cmd2.Cmd):
             self._register_job(name, target, proc, outfile, cmd, started_at=started_at)
             return
 
-        self._stream_foreground_process(name, proc, started_at=started_at)
+        self._stream_foreground_process(
+            name,
+            proc,
+            started_at=started_at,
+            quiet=silent,
+        )
 
     def _run_bundle(
         self,
@@ -979,6 +1016,7 @@ class PufApp(cmd2.Cmd):
         target: str,
         scan_dir: Path,
         background: bool = False,
+        silent: bool = False,
     ) -> None:
         bundle_started_at = time.monotonic()
         kinds = self._expand_run_kind(bundle_kind)
@@ -987,7 +1025,7 @@ class PufApp(cmd2.Cmd):
 
         jobs: list[dict] = []
         failures: list[str] = []
-        visible_kind = None if background else (kinds[-1] if kinds and kinds[-1] == "nmap" else None)
+        visible_kind = None if (background or silent) else (kinds[-1] if kinds and kinds[-1] == "nmap" else None)
 
         for kind in kinds:
             template = self.builtin_scan_profiles.get(kind)
@@ -997,12 +1035,14 @@ class PufApp(cmd2.Cmd):
                 continue
 
             try:
+                verbosity = "silent" if (background or silent or kind != visible_kind) else "normal"
+
                 if kind == "nmap":
                     proc, outfile, cmd = run_nmap(
                         self._nmap_target(target),
                         self.config,
                         scan_dir,
-                        verbosity="normal" if kind == visible_kind else "silent",
+                        verbosity=verbosity,
                         template_override=template,
                     )
                 else:
@@ -1011,7 +1051,7 @@ class PufApp(cmd2.Cmd):
                         kind,
                         self.config,
                         scan_dir,
-                        verbosity="silent" if background or kind != visible_kind else "normal",
+                        verbosity=verbosity,
                         template_override=template,
                     )
 
@@ -1032,13 +1072,19 @@ class PufApp(cmd2.Cmd):
 
         if background:
             for job in jobs:
-                self._register_job(job["kind"], target, job["proc"], job["outfile"], job["cmd"])
+                self._register_job(
+                    job["kind"],
+                    target,
+                    job["proc"],
+                    job["outfile"],
+                    job["cmd"],
+                )
             self.poutput(f"[+] bundle {bundle_kind} launched in background")
             return
 
         visible_job = next((job for job in jobs if job["kind"] == visible_kind), None)
 
-        if visible_job and visible_job["proc"].stdout:
+        if visible_job and visible_job["proc"].stdout and not silent:
             proc = visible_job["proc"]
 
             while True:
@@ -1081,8 +1127,14 @@ class PufApp(cmd2.Cmd):
         else:
             self.poutput(f"[+] bundle {bundle_kind} completed in {bundle_elapsed}")
 
-    def _stream_foreground_process(self, name: str, proc, started_at: float | None = None) -> bool:
-        if proc.stdout:
+    def _stream_foreground_process(
+        self,
+        name: str,
+        proc,
+        started_at: float | None = None,
+        quiet: bool = False,
+    ) -> bool:
+        if proc.stdout and not quiet:
             for line in iter(proc.stdout.readline, ""):
                 if line == "" and proc.poll() is not None:
                     break
@@ -1091,7 +1143,6 @@ class PufApp(cmd2.Cmd):
                     self.poutput(line)
 
         proc.wait()
-
         elapsed = None if started_at is None else self._format_duration(time.monotonic() - started_at)
 
         if proc.returncode == 0:
