@@ -41,8 +41,8 @@ class PufApp(cmd2.Cmd):
     run_parser.add_argument("target")
 
     show_parser = cmd2.Cmd2ArgumentParser()
-    show_parser.add_argument("kind", choices=["nmap", "files", "dirs", "subs"])
-    show_parser.add_argument("target")
+    show_parser.add_argument("arg1")
+    show_parser.add_argument("arg2", nargs="?")
     show_parser.add_argument("--page", type=int, default=1)
     show_parser.add_argument("--page-size", type=int, default=250)
 
@@ -50,12 +50,8 @@ class PufApp(cmd2.Cmd):
     list_parser.add_argument("target", nargs="?")
 
     remove_parser = cmd2.Cmd2ArgumentParser()
-    remove_parser.add_argument("target")
-    remove_parser.add_argument(
-        "result",
-        nargs="?",
-        choices=["nmap", "files", "dirs", "subs"],
-    )
+    remove_parser.add_argument("arg1")
+    remove_parser.add_argument("arg2", nargs="?")
 
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
@@ -216,27 +212,75 @@ class PufApp(cmd2.Cmd):
 
             job["reported"] = True
 
+    def _show_targets(self) -> None:
+        targets = self._iter_target_dirs()
+        if not targets:
+            self.poutput(Text("No scanned targets found", style="yellow"))
+            return
+
+        self.poutput(Text("Available targets", style="bold blue"))
+        for target in targets:
+            line = Text()
+            line.append("- ", style="cyan")
+            line.append(target.name)
+            self.poutput(line)
+
+    def _show_results_list(self, target: str) -> None:
+        files = self._list_result_files(target)
+
+        if not files:
+            self.poutput(Text("No result files found for target", style="yellow"))
+            return
+
+        header = Text()
+        header.append("Available results for ", style="bold blue")
+        header.append(self._target_folder(target), style="cyan")
+        self.poutput(header)
+
+        for file in files:
+            raw_name = file.name
+            display_name = self._result_display_name(raw_name)
+            style = self._result_style(raw_name)
+
+            line = Text()
+            line.append("- ", style=style)
+            line.append(display_name, style=style)
+            self.poutput(line)
+
     @cmd2.with_argparser(show_parser)
     def do_show(self, args: argparse.Namespace) -> None:
-        target = self._normalize_target(args.target)
-
         try:
             if args.page < 1:
                 raise ValueError("page must be at least 1")
             if args.page_size < 1:
                 raise ValueError("page-size must be at least 1")
 
-            result_file = self._get_result_file(target, args.kind)
+            if args.arg1 == "list" and args.arg2 is None:
+                self._show_targets()
+                return
 
-            if args.kind == "nmap":
+            if args.arg2 == "list":
+                target = self._normalize_target(args.arg1)
+                self._show_results_list(target)
+                return
+
+            if args.arg1 not in {"nmap", "files", "dirs", "subs"} or args.arg2 is None:
+                raise ValueError("usage: show list | show <target> list | show <kind> <target>")
+
+            kind = args.arg1
+            target = self._normalize_target(args.arg2)
+            result_file = self._get_result_file(target, kind)
+
+            if kind == "nmap":
                 print_nmap_results(result_file, page=args.page, page_size=args.page_size)
             else:
                 print_ffuf_results(
                     result_file,
-                    args.kind,
+                    kind,
                     page=args.page,
                     page_size=args.page_size,
                 )
+
         except FileNotFoundError as exc:
             self.perror(f"[!] {exc}")
         except Exception as exc:
@@ -288,12 +332,20 @@ class PufApp(cmd2.Cmd):
 
     @cmd2.with_argparser(remove_parser)
     def do_remove(self, args: argparse.Namespace) -> None:
-        target = self._normalize_target(args.target)
-
         try:
+            if args.arg1 == "list" and args.arg2 is None:
+                self._show_targets()
+                return
+
+            if args.arg2 == "list":
+                target = self._normalize_target(args.arg1)
+                self._show_results_list(target)
+                return
+
+            target = self._normalize_target(args.arg1)
             scan_dir = self._get_scan_dir(target)
 
-            if args.result is None:
+            if args.arg2 is None:
                 label = self._target_folder(target)
                 if not self._confirm(f"Remove target '{label}'?"):
                     self.poutput("[+] cancelled")
@@ -303,16 +355,24 @@ class PufApp(cmd2.Cmd):
                 self.poutput(f"[+] removed target: {label}")
                 return
 
-            result_file = self._get_result_file(target, args.result)
+            result = args.arg2
+            if result not in {"nmap", "files", "dirs", "subs"}:
+                raise ValueError("usage: remove list | remove <target> list | remove <target> [nmap|files|dirs|subs]")
+
+            result_file = self._get_result_file(target, result)
 
             if not self._confirm(
-                f"Remove result '{args.result}' for target '{self._target_folder(target)}'?"
+                f"Remove file '{result_file.name}' for target '{self._target_folder(target)}'?"
             ):
                 self.poutput("[+] cancelled")
                 return
 
             result_file.unlink()
-            self.poutput(f"[+] removed result: {args.result} for {self._target_folder(target)}")
+            self.poutput(f"[+] removed result: {result} for {self._target_folder(target)}")
+
+            if not any(scan_dir.iterdir()):
+                scan_dir.rmdir()
+                self.poutput(f"[+] removed empty target folder: {self._target_folder(target)}")
 
         except FileNotFoundError as exc:
             self.perror(f"[!] {exc}")
