@@ -104,6 +104,8 @@ class PufApp(cmd2.Cmd):
         "subs": "fuzz_subs",
     }
 
+    FILTERABLE_KINDS = FILTERABLE_KINDS
+
     intro = INTRO_TEXT
 
     run_parser = cmd2.Cmd2ArgumentParser()
