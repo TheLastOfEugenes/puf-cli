@@ -28,7 +28,7 @@ python3 -m pip install -e .
 
 Or, for the exegol users, a quick command to add it to your image
 ```
-echo "wget -qO- https://github.com/TheLastOfEugenes/puf-cli/archive/refs/tags/v1.0.tar.gz | tar -xz -C /opt/ && mv /opt/puf-cli-1.0 /opt/puf-cli & python3 -m pip install -e /opt/puf-cli" >> $HOME/.exegol/my-resources/setup/load_user_setup.sh
+echo "wget -qO- https://github.com/TheLastOfEugenes/puf-cli/archive/refs/tags/v1.0.3.tar.gz | tar -xz -C /opt/ && mv /opt/puf-cli-1.0.3 /opt/puf-cli & python3 -m pip install -e /opt/puf-cli" >> $HOME/.exegol/my-resources/setup/load_user_setup.sh
 ```
 
 # Features
