@@ -99,6 +99,15 @@ class PufApp(cmd2.Cmd):
         "subs": "fuzz_subs",
     }
 
+    FILTER_RESULT_ALIASES = {
+        "files_f": "files_f.json",
+        "dirs_f": "dirs_f.json",
+        "subs_f": "subs_f.json",
+        "files_cf": "files_cf.json",
+        "dirs_cf": "dirs_cf.json",
+        "subs_cf": "subs_cf.json",
+    }
+
     FILTERABLE_KINDS = FILTERABLE_KINDS
 
     intro = INTRO_TEXT
@@ -114,7 +123,7 @@ class PufApp(cmd2.Cmd):
 
     show_parser = cmd2.Cmd2ArgumentParser()
     show_parser.add_argument("target")
-    show_parser.add_argument("kind", nargs="?")
+    show_parser.add_argument("kind", nargs="*")
     show_parser.add_argument("--page", type=int, default=1)
     show_parser.add_argument("--page-size", type=int, default=250)
 
@@ -236,20 +245,22 @@ class PufApp(cmd2.Cmd):
             if args.page_size < 1:
                 raise ValueError("page-size must be at least 1")
 
-            if args.target == self.LITERALS["list"] and args.kind is None:
+            kind_tokens = args.kind or []
+
+            if args.target == self.LITERALS["list"] and not kind_tokens:
                 self._show_targets()
                 return
 
-            if args.kind == self.LITERALS["list"]:
+            if len(kind_tokens) == 1 and kind_tokens[0] == self.LITERALS["list"]:
                 target = self._resolve_existing_target(args.target)
                 self._show_results_list(target)
                 return
 
-            if args.kind is None:
+            if not kind_tokens:
                 raise ValueError(self._show_usage())
 
             target = self._resolve_existing_target(args.target)
-            kind = self._resolve_last_result_kind(args.kind)
+            kind = self._resolve_show_kind_tokens(kind_tokens)
 
             if kind == self.LITERALS["all"]:
                 ordered = ["files", "dirs", "subs", "nmap"]
@@ -459,6 +470,46 @@ class PufApp(cmd2.Cmd):
 
     def do_quit(self, _: str) -> bool:
         return True
+    
+    def _is_showable_result_name(self, name: str) -> bool:
+        return (
+            name in self.RESULT_KINDS
+            or name in self.custom_scan_profiles
+            or name in self.FILTER_RESULT_ALIASES
+        )
+
+    def _resolve_show_kind_tokens(self, tokens: list[str]) -> str:
+        if not tokens:
+            raise ValueError(self._show_usage())
+
+        if len(tokens) == 1:
+            return self._resolve_last_result_kind(tokens[0])
+
+        normalized = " ".join(tokens).strip().lower()
+        parts = normalized.split()
+
+        if "last" in parts and len(parts) == 1:
+            return self._resolve_last_result_kind("last")
+
+        if "all" in parts and len(parts) == 1:
+            return "all"
+
+        if "nmap" in parts:
+            return "nmap"
+
+        base_kind = next((k for k in ("files", "dirs", "subs") if k in parts), None)
+        if base_kind:
+            has_filtered = "filtered" in parts
+            has_custom = "custom" in parts
+
+            if has_filtered and has_custom:
+                return f"{base_kind}_cf"
+            if has_filtered:
+                return f"{base_kind}_f"
+            return base_kind
+
+        candidate = normalized.replace(" ", "_")
+        return self._resolve_last_result_kind(candidate)
 
     def _resolve_existing_target(self, target: str) -> str:
         if target == self.LITERALS["last"]:
@@ -566,6 +617,18 @@ class PufApp(cmd2.Cmd):
                 self._store_row_refs(rows)
             return
 
+        if kind in self.FILTER_RESULT_ALIASES:
+            scan_dir = self._get_scan_dir(target)
+            result_file = scan_dir / self.FILTER_RESULT_ALIASES[kind]
+
+            if not result_file.exists():
+                raise FileNotFoundError(f"target has no result for {kind}")
+
+            base_kind = kind.split("_", 1)[0]
+            rows = print_ffuf_results(result_file, base_kind, page=page, page_size=page_size)
+            self._store_row_refs(rows)
+            return
+
         self._show_custom_result(target, kind)
 
     def _show_custom_result(self, target: str, name: str) -> None:
@@ -633,7 +696,11 @@ class PufApp(cmd2.Cmd):
         self.prompt = self._build_prompt()
 
     def _show_usage(self) -> str:
-        return "usage: show list | show <target|last> list | show <target|last> <kind|last|all>"
+        return (
+            "usage: show list | show <target|last> list | "
+            "show <target|last> <kind|last|all> | "
+            "show <target|last> [custom] filtered <files|dirs|subs>"
+        )
 
     def _remove_usage(self) -> str:
         kinds = "|".join(self.RESULT_KINDS)
