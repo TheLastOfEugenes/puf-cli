@@ -488,6 +488,18 @@ class PufApp(cmd2.Cmd):
             or name in self.custom_scan_profiles
             or name in self.FILTER_RESULT_ALIASES
         )
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        total = max(0, int(round(seconds)))
+        mins, secs = divmod(total, 60)
+        hours, mins = divmod(mins, 60)
+
+        if hours:
+            return f"{hours}h {mins}m {secs}s"
+        if mins:
+            return f"{mins}m {secs}s"
+        return f"{secs}s"
     
     def _scan_autofilter(self, mode: str) -> None:
         if mode == "show":
@@ -870,6 +882,8 @@ class PufApp(cmd2.Cmd):
         if not template:
             raise ValueError(f"no command configured for scan: {kind}")
 
+        started_at = time.monotonic()
+
         if kind == "nmap":
             proc, outfile, cmd = run_nmap(
                 self._nmap_target(target),
@@ -893,13 +907,23 @@ class PufApp(cmd2.Cmd):
         self.poutput(f"OUTFILE: {outfile}")
 
         if background:
-            self._register_job(kind, target, proc, outfile, cmd)
+            self._register_job(kind, target, proc, outfile, cmd, started_at=started_at)
             return
 
-        success = self._stream_foreground_process(kind, proc)
+        success = self._stream_foreground_process(kind, proc, started_at=started_at)
 
-        if success:
-            self._run_auto_filter(target, kind, outfile)
+        if success and kind in self.FILTERABLE_KINDS:
+            try:
+                filtered_file = run_filter(
+                    config=self.config,
+                    scan_dir=scan_dir,
+                    kind=kind,
+                    source_file=outfile,
+                    mode="filtered",
+                )
+                self.poutput(f"[+] auto-filtered -> {filtered_file}")
+            except Exception as exc:
+                self.perror(f"[!] auto-filter failed for {kind}: {exc}")
 
     def _run_custom_scan(
         self,
@@ -921,6 +945,8 @@ class PufApp(cmd2.Cmd):
             )
         )
 
+        started_at = time.monotonic()
+
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -935,10 +961,10 @@ class PufApp(cmd2.Cmd):
         self.poutput(f"OUTFILE: {outfile}")
 
         if background:
-            self._register_job(name, target, proc, outfile, cmd)
+            self._register_job(name, target, proc, outfile, cmd, started_at=started_at)
             return
 
-        self._stream_foreground_process(name, proc)
+        self._stream_foreground_process(name, proc, started_at=started_at)
 
     def _run_bundle(
         self,
@@ -947,6 +973,7 @@ class PufApp(cmd2.Cmd):
         scan_dir: Path,
         background: bool = False,
     ) -> None:
+        bundle_started_at = time.monotonic()
         kinds = self._expand_run_kind(bundle_kind)
         self.poutput(f"[+] starting {bundle_kind} bundle for {target}")
         self.poutput(f"[+] bundle plan: {', '.join(kinds)}")
@@ -1039,13 +1066,15 @@ class PufApp(cmd2.Cmd):
                 self.perror(f"[!] failed: {job['kind']} (code {rc})")
             job["reported"] = True
 
+        bundle_elapsed = self._format_duration(time.monotonic() - bundle_started_at)
+
         if failures:
             failed = ", ".join(dict.fromkeys(failures))
-            self.perror(f"[!] bundle {bundle_kind} completed with failures: {failed}")
+            self.perror(f"[!] bundle {bundle_kind} completed with failures in {bundle_elapsed}: {failed}")
         else:
-            self.poutput(f"[+] bundle {bundle_kind} completed")
+            self.poutput(f"[+] bundle {bundle_kind} completed in {bundle_elapsed}")
 
-    def _stream_foreground_process(self, name: str, proc) -> bool:
+    def _stream_foreground_process(self, name: str, proc, started_at: float | None = None) -> bool:
         if proc.stdout:
             for line in iter(proc.stdout.readline, ""):
                 if line == "" and proc.poll() is not None:
@@ -1056,14 +1085,30 @@ class PufApp(cmd2.Cmd):
 
         proc.wait()
 
+        elapsed = None if started_at is None else self._format_duration(time.monotonic() - started_at)
+
         if proc.returncode == 0:
-            self.poutput(f"[+] completed: {name}")
+            if elapsed is None:
+                self.poutput(f"[+] completed: {name}")
+            else:
+                self.poutput(f"[+] completed: {name} in {elapsed}")
             return True
 
-        self.perror(f"[!] scan failed with code {proc.returncode}")
+        if elapsed is None:
+            self.perror(f"[!] scan failed with code {proc.returncode}")
+        else:
+            self.perror(f"[!] scan failed with code {proc.returncode} after {elapsed}")
         return False
 
-    def _register_job(self, scan: str, target: str, proc, outfile: Path, cmd: list[str]) -> int:
+    def _register_job(
+        self,
+        scan: str,
+        target: str,
+        proc,
+        outfile: Path,
+        cmd: list[str],
+        started_at: float | None = None,
+    ) -> int:
         job_id = self.next_job_id
         self.next_job_id += 1
 
@@ -1073,6 +1118,7 @@ class PufApp(cmd2.Cmd):
             "proc": proc,
             "outfile": outfile,
             "cmd": cmd,
+            "started_at": started_at,
         }
 
         self.poutput(f"[+] job {job_id} started in background: {scan} -> {outfile}")
@@ -1094,11 +1140,34 @@ class PufApp(cmd2.Cmd):
             if rc is None:
                 continue
 
+            elapsed = None
+            if job.get("started_at") is not None:
+                elapsed = self._format_duration(time.monotonic() - job["started_at"])
+
             if rc == 0:
-                self.poutput(f"[+] background job {job_id} completed: {job['scan']}")
-                self._run_auto_filter(job["target"], job["scan"], job["outfile"])
+                if elapsed is None:
+                    self.poutput(f"[+] background job {job_id} completed: {job['scan']}")
+                else:
+                    self.poutput(f"[+] background job {job_id} completed: {job['scan']} in {elapsed}")
+
+                if job["scan"] in self.FILTERABLE_KINDS:
+                    try:
+                        scan_dir = self._get_scan_dir(job["target"])
+                        filtered_file = run_filter(
+                            config=self.config,
+                            scan_dir=scan_dir,
+                            kind=job["scan"],
+                            source_file=job["outfile"],
+                            mode="filtered",
+                        )
+                        self.poutput(f"[+] auto-filtered -> {filtered_file}")
+                    except Exception as exc:
+                        self.perror(f"[!] auto-filter failed for {job['scan']}: {exc}")
             else:
-                self.perror(f"[!] background job {job_id} failed: {job['scan']} (code {rc})")
+                if elapsed is None:
+                    self.perror(f"[!] background job {job_id} failed: {job['scan']} (code {rc})")
+                else:
+                    self.perror(f"[!] background job {job_id} failed: {job['scan']} (code {rc}) after {elapsed}")
 
             finished_ids.append(job_id)
 
