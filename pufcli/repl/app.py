@@ -562,20 +562,22 @@ class PufApp(cmd2.Cmd):
     def _resolve_known_target(self, value: str) -> str:
         raw = value.strip()
 
+        # 1) Exact folder name typed by user, e.g. "https_kobold.htb"
         direct_scan_dir = self.base_scan_dir / raw
         if direct_scan_dir.exists() and direct_scan_dir.is_dir():
             return raw
 
+        # 2) Try typed value and protocol variants
         candidates = self._target_candidates(raw)
-
         for candidate in candidates:
             scan_dir = self.base_scan_dir / self._target_folder(candidate)
-            if scan_dir.exists():
+            if scan_dir.exists() and scan_dir.is_dir():
                 return candidate
 
+        # 3) Final fallback through normalized target
         normalized = self._normalize_target(raw)
         scan_dir = self.base_scan_dir / self._target_folder(normalized)
-        if scan_dir.exists():
+        if scan_dir.exists() and scan_dir.is_dir():
             return normalized
 
         raise FileNotFoundError(f"target has not been scanned yet: {value}")
@@ -1302,10 +1304,18 @@ class PufApp(cmd2.Cmd):
         return parsed.hostname or target
 
     def _get_scan_dir(self, target: str) -> Path:
-        scan_dir = self.base_scan_dir / self._target_folder(target)
-        if not scan_dir.exists():
-            raise FileNotFoundError("target has not been scanned yet")
-        return scan_dir
+        raw = target.strip()
+
+        # If caller already passed a folder name from the scans directory, use it directly.
+        direct_scan_dir = self.base_scan_dir / raw
+        if direct_scan_dir.exists() and direct_scan_dir.is_dir():
+            return direct_scan_dir
+
+        scan_dir = self.base_scan_dir / self._target_folder(raw)
+        if scan_dir.exists() and scan_dir.is_dir():
+            return scan_dir
+
+        raise FileNotFoundError(f"target has not been scanned yet: {target}")
 
     def _get_result_file(self, target: str, kind: str) -> Path:
         scan_dir = self._get_scan_dir(target)
