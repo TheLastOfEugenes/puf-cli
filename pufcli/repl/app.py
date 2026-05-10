@@ -88,12 +88,12 @@ class PufApp(cmd2.Cmd):
     intro = INTRO_TEXT
 
     run_parser = cmd2.Cmd2ArgumentParser()
-    run_parser.add_argument("kind", choices=list(RUN_KINDS))
     run_parser.add_argument("target")
+    run_parser.add_argument("kind", choices=list(RUN_KINDS))
 
     show_parser = cmd2.Cmd2ArgumentParser()
-    show_parser.add_argument("arg1")
-    show_parser.add_argument("arg2", nargs="?")
+    show_parser.add_argument("target")
+    show_parser.add_argument("kind", nargs="?")
     show_parser.add_argument("--page", type=int, default=1)
     show_parser.add_argument("--page-size", type=int, default=250)
 
@@ -145,20 +145,20 @@ class PufApp(cmd2.Cmd):
             if args.page_size < 1:
                 raise ValueError("page-size must be at least 1")
 
-            if args.arg1 == self.LITERALS["list"] and args.arg2 is None:
+            if args.target == self.LITERALS["list"] and args.kind is None:
                 self._show_targets()
                 return
 
-            if args.arg2 == self.LITERALS["list"]:
-                target = self._normalize_target(args.arg1)
+            if args.kind == self.LITERALS["list"]:
+                target = self._normalize_target(args.target)
                 self._show_results_list(target)
                 return
 
-            if args.arg1 not in self.RESULT_KINDS or args.arg2 is None:
+            if args.kind is None or args.kind not in self.RESULT_KINDS:
                 raise ValueError(self._show_usage())
 
-            kind = args.arg1
-            target = self._normalize_target(args.arg2)
+            target = self._normalize_target(args.target)
+            kind = args.kind
             result_file = self._get_result_file(target, kind)
 
             if kind == "nmap":
@@ -268,8 +268,8 @@ class PufApp(cmd2.Cmd):
         self.prompt = self._build_prompt()
 
     def _show_usage(self) -> str:
-        return "usage: show list | show <target> list | show <kind> <target>"
-
+        return "usage: show list | show <target> list | show <target> <kind>"
+    
     def _remove_usage(self) -> str:
         kinds = "|".join(self.RESULT_KINDS)
         return f"usage: remove list | remove <target> list | remove <target> [{kinds}]"
