@@ -44,10 +44,13 @@ class PufApp(cmd2.Cmd):
         "result_filtered": "bright_magenta",
         "result_custom": "dark_orange",
         "result_nmap": "green",
+        "result_custom_scan": "white",
     }
 
     LITERALS = {
         "list": "list",
+        "last": "last",
+        "all": "all",
     }
 
     RESULT_KINDS = ("nmap", "files", "dirs", "subs")
@@ -152,6 +155,10 @@ class PufApp(cmd2.Cmd):
         self._refresh_prompt()
         self.poutput(f"{self.APP_NAME} ready")
 
+        self.last_target: str | None = None
+        self.last_scan: str | None = None
+        self.last_result_kind: str | None = None
+
     def preloop(self) -> None:
         self._refresh_prompt()
 
@@ -161,12 +168,22 @@ class PufApp(cmd2.Cmd):
 
     @cmd2.with_argparser(run_parser)
     def do_run(self, args: argparse.Namespace) -> None:
-        target = self._normalize_target(args.target)
-        scan = args.scan
+        target = self._resolve_last_target(args.target)
+        scan = self._resolve_last_scan(args.scan)
+
         scan_dir = self.base_scan_dir / self._target_folder(target)
         scan_dir.mkdir(parents=True, exist_ok=True)
 
         try:
+            if scan == self.LITERALS["all"]:
+                self.last_target = target
+                for kind in self.RESULT_KINDS:
+                    self.last_scan = kind
+                    self._run_builtin_scan(kind, target, scan_dir, background=args.background)
+                return
+            
+            self._remember_run(target, scan)
+
             if scan in self.BUNDLE_KINDS:
                 self._run_bundle(scan, target, scan_dir, background=args.background)
                 return
@@ -201,26 +218,27 @@ class PufApp(cmd2.Cmd):
                 return
 
             if args.kind == self.LITERALS["list"]:
-                target = self._normalize_target(args.target)
+                target = self._resolve_last_target(args.target)
                 self._show_results_list(target)
                 return
 
-            if args.kind is None or args.kind not in self.RESULT_KINDS:
+            if args.kind is None:
                 raise ValueError(self._show_usage())
 
-            target = self._normalize_target(args.target)
-            kind = args.kind
-            result_file = self._get_result_file(target, kind)
+            target = self._resolve_last_target(args.target)
+            kind = self._resolve_last_result_kind(args.kind)
 
-            if kind == "nmap":
-                print_nmap_results(result_file, page=args.page, page_size=args.page_size)
-            else:
-                print_ffuf_results(
-                    result_file,
-                    kind,
-                    page=args.page,
-                    page_size=args.page_size,
-                )
+            if kind == self.LITERALS["all"]:
+                for result_kind in self._iter_showable_result_names(target):
+                    self._remember_result_action(target, result_kind)
+                    self._show_single_result(target, result_kind, args.page, args.page_size)
+                return
+
+            if not self._is_showable_result_name(kind):
+                raise ValueError(self._show_usage())
+
+            self._remember_result_action(target, kind)
+            self._show_single_result(target, kind, args.page, args.page_size)
 
         except FileNotFoundError as exc:
             self.perror(f"[!] {exc}")
@@ -234,7 +252,7 @@ class PufApp(cmd2.Cmd):
                 self._show_targets()
                 return
 
-            target = self._normalize_target(args.target)
+            target = self._resolve_last_target(args.target)
             self._show_results_list(target)
 
         except FileNotFoundError as exc:
@@ -250,11 +268,11 @@ class PufApp(cmd2.Cmd):
                 return
 
             if args.kind == self.LITERALS["list"]:
-                target = self._normalize_target(args.target)
+                target = self._resolve_last_target(args.target)
                 self._show_results_list(target)
                 return
 
-            target = self._normalize_target(args.target)
+            target = self._resolve_last_target(args.target)
             scan_dir = self._get_scan_dir(target)
 
             if args.kind is None:
@@ -267,7 +285,30 @@ class PufApp(cmd2.Cmd):
                 self.poutput(f"[+] removed target: {label}")
                 return
 
-            kind = args.kind
+            kind = self._resolve_last_result_kind(args.kind)
+
+            if kind == self.LITERALS["all"]:
+                if not self._confirm(f"Remove all results for target '{self._target_folder(target)}'?"):
+                    self.poutput("[+] cancelled")
+                    return
+
+                removed_any = False
+                for result_kind in self.RESULT_KINDS:
+                    result_file = scan_dir / self.RESULT_FILES[result_kind]
+                    if result_file.exists():
+                        result_file.unlink()
+                        self.poutput(f"[+] removed result: {result_kind} for {self._target_folder(target)}")
+                        self._remember_result_action(target, result_kind)
+                        removed_any = True
+
+                if not removed_any:
+                    self.poutput("[+] no result files found to remove")
+
+                if scan_dir.exists() and not any(scan_dir.iterdir()):
+                    scan_dir.rmdir()
+                    self.poutput(f"[+] removed empty target folder: {self._target_folder(target)}")
+                return
+
             if kind not in self.RESULT_KINDS:
                 raise ValueError(self._remove_usage())
 
@@ -280,6 +321,7 @@ class PufApp(cmd2.Cmd):
                 return
 
             result_file.unlink()
+            self._remember_result_action(target, kind)
             self.poutput(f"[+] removed result: {kind} for {self._target_folder(target)}")
 
             if not any(scan_dir.iterdir()):
@@ -342,6 +384,101 @@ class PufApp(cmd2.Cmd):
 
     def do_quit(self, _: str) -> bool:
         return True
+    
+    def _iter_showable_result_names(self, target: str) -> list[str]:
+        names = []
+
+        scan_dir = self._get_scan_dir(target)
+
+        for kind in self.RESULT_KINDS:
+            result_file = scan_dir / self.RESULT_FILES[kind]
+            if result_file.exists():
+                names.append(kind)
+
+        for name in sorted(self.custom_scan_profiles):
+            result_file = scan_dir / f"{name}.out"
+            if result_file.exists():
+                names.append(name)
+
+        return names
+
+    def _is_showable_result_name(self, name: str) -> bool:
+        return name in self.RESULT_KINDS or name in self.custom_scan_profiles
+
+    def _is_custom_result_file(self, path: Path) -> bool:
+        return (
+            path.is_file()
+            and path.suffix == ".out"
+            and path.stem in self.custom_scan_profiles
+        )
+    
+    def _show_single_result(self, target: str, kind: str, page: int, page_size: int) -> None:
+        if kind in self.RESULT_KINDS:
+            result_file = self._get_result_file(target, kind)
+
+            if kind == "nmap":
+                print_nmap_results(result_file, page=page, page_size=page_size)
+            else:
+                print_ffuf_results(result_file, kind, page=page, page_size=page_size)
+            return
+
+        self._show_custom_result(target, kind)
+
+    def _show_custom_result(self, target: str, name: str) -> None:
+        scan_dir = self._get_scan_dir(target)
+        result_file = scan_dir / f"{name}.out"
+
+        if not result_file.exists():
+            raise FileNotFoundError(f"target has no result for custom scan '{name}'")
+
+        self.poutput(Text(f"Custom result: {name}", style=self._style("info")))
+
+        try:
+            content = result_file.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            raise ValueError(f"failed to read custom result '{name}': {exc}") from exc
+
+        if not content.strip():
+            self.poutput(Text("[empty file]", style=self._style("muted")))
+            return
+
+        for line in content.splitlines():
+            self.poutput(line)
+
+    def _resolve_last_target(self, target: str) -> str:
+        if target != self.LITERALS["last"]:
+            return self._normalize_target(target)
+
+        if not self.last_target:
+            raise ValueError("no previous target available")
+
+        return self.last_target
+
+    def _resolve_last_scan(self, scan: str) -> str:
+        if scan != self.LITERALS["last"]:
+            return scan
+
+        if not self.last_scan:
+            raise ValueError("no previous scan available")
+
+        return self.last_scan
+
+    def _resolve_last_result_kind(self, kind: str) -> str:
+        if kind != self.LITERALS["last"]:
+            return kind
+
+        if not self.last_result_kind:
+            raise ValueError("no previous result kind available")
+
+        return self.last_result_kind
+
+    def _remember_run(self, target: str, scan: str) -> None:
+        self.last_target = target
+        self.last_scan = scan
+
+    def _remember_result_action(self, target: str, kind: str) -> None:
+        self.last_target = target
+        self.last_result_kind = kind
 
     def _ansi(self, color_name: str) -> str:
         return self.ANSI_COLORS.get(color_name, "")
@@ -361,12 +498,12 @@ class PufApp(cmd2.Cmd):
         self.prompt = self._build_prompt()
 
     def _show_usage(self) -> str:
-        return "usage: show list | show <target> list | show <target> <kind>"
+        return "usage: show list | show <target|last> list | show <target|last> <kind|last|all>"
 
     def _remove_usage(self) -> str:
         kinds = "|".join(self.RESULT_KINDS)
-        return f"usage: remove list | remove <target> list | remove <target> [{kinds}]"
-
+        return f"usage: remove list | remove <target|last> list | remove <target|last> [{kinds}|last|all]"
+    
     def _confirm(self, prompt: str) -> bool:
         while True:
             answer = input(f"{prompt} [y/N]: ").strip().lower()
@@ -746,12 +883,14 @@ class PufApp(cmd2.Cmd):
     def _result_display_name(cls, filename: str) -> str:
         if filename in cls.RESULT_DISPLAY_NAMES:
             return cls.RESULT_DISPLAY_NAMES[filename]
+        if filename.endswith(".out"):
+            return filename[:-4]
         if filename.endswith(".json"):
             return filename[:-5]
         if filename.endswith(".xml"):
             return filename[:-4]
         return filename
-
+    
     def _result_style(self, filename: str) -> str:
         if filename == self.RESULT_FILES["nmap"]:
             return self._style("result_nmap")
@@ -759,6 +898,8 @@ class PufApp(cmd2.Cmd):
             return self._style("result_custom")
         if filename.endswith("_f.json") or filename.endswith("_filtered.json"):
             return self._style("result_filtered")
+        if filename.endswith(".out"):
+            return self._style("result_custom_scan")
         if filename.endswith(".json"):
             return self._style("result_ffuf")
         return self._style("muted")
