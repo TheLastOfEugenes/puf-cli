@@ -603,9 +603,6 @@ class PufApp(cmd2.Cmd):
 
         return names
 
-    def _is_showable_result_name(self, name: str) -> bool:
-        return name in self.RESULT_KINDS or name in self.custom_scan_profiles
-
     def _show_single_result(self, target: str, kind: str, page: int, page_size: int) -> None:
         if kind in self.RESULT_KINDS:
             result_file = self._get_result_file(target, kind)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,35 @@ def write_json_results(path: Path, data: dict[str, Any]) -> None:
         json.dump(data, f, indent=2)
 
 
+def _normalize_optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    value = str(value).strip()
+    if not value or value.lower() in {"none", "null"}:
+        return None
+    return int(value)
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _parse_csv_ints(raw: str | None) -> set[int] | None:
     if raw is None:
         return None
@@ -58,14 +88,7 @@ def _parse_csv_ints(raw: str | None) -> set[int] | None:
     return values
 
 
-def _normalize_optional_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    value = str(value).strip()
-    return value or None
-
-
-def build_auto_filter_options(config) -> dict[str, Any]:
+def build_filter_options(config) -> dict[str, Any]:
     filter_cfg = {}
     if hasattr(config, "get_filter_config"):
         filter_cfg = config.get_filter_config() or {}
@@ -75,33 +98,66 @@ def build_auto_filter_options(config) -> dict[str, Any]:
         filter_cfg = dict(config.parser.items("filter"))
 
     return {
+        "smart_enabled": _coerce_bool(
+            filter_cfg.get("smart_enabled", filter_cfg.get("smart_filter")),
+            default=True,
+        ),
+        "smart_limit": _coerce_int(filter_cfg.get("smart_limit")) or 1000,
         "status": _normalize_optional_str(
-            filter_cfg.get("status_codes")
-            or filter_cfg.get("status")
-            or "200,204,301,302,307,308,401,403"
+            filter_cfg.get("status_codes") or filter_cfg.get("status")
         ),
         "min_words": _coerce_int(filter_cfg.get("min_words")),
         "max_words": _coerce_int(filter_cfg.get("max_words")),
+        "min_lines": _coerce_int(filter_cfg.get("min_lines")),
+        "max_lines": _coerce_int(filter_cfg.get("max_lines")),
+        "min_length": _coerce_int(filter_cfg.get("min_length")),
+        "max_length": _coerce_int(filter_cfg.get("max_length")),
         "match": _normalize_optional_str(filter_cfg.get("match")),
         "exclude": _normalize_optional_str(filter_cfg.get("exclude")),
         "regex": _normalize_optional_str(filter_cfg.get("regex")),
     }
 
 
-def _coerce_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    value = str(value).strip()
-    if not value or value.lower() in {"none", "null"}:
-        return None
-    return int(value)
+def _fingerprint(row: dict[str, Any]) -> tuple[Any, int, int, int]:
+    return (
+        row.get("status"),
+        int(row.get("length", 0) or 0),
+        int(row.get("words", 0) or 0),
+        int(row.get("lines", 0) or 0),
+    )
+
+
+def apply_smart_filter(results: list[dict[str, Any]], smart_limit: int) -> list[dict[str, Any]]:
+    if not results:
+        return results
+
+    fingerprints = Counter(
+        _fingerprint(row)
+        for row in results
+        if isinstance(row, dict)
+    )
+
+    dominant_fps = {
+        fp for fp, count in fingerprints.items()
+        if count > smart_limit
+    }
+
+    if not dominant_fps:
+        return results
+
+    outliers = [
+        row for row in results
+        if isinstance(row, dict) and _fingerprint(row) not in dominant_fps
+    ]
+
+    return outliers if outliers else [results[0]]
 
 
 def row_matches_filter(row: dict[str, Any], options: dict[str, Any]) -> bool:
     status = row.get("status")
     words = row.get("words")
-    length = row.get("length")
     lines = row.get("lines")
+    length = row.get("length")
     url = str(row.get("url", ""))
     host = str(row.get("host", ""))
     input_data = row.get("input", {})
@@ -189,6 +245,10 @@ def apply_filter_to_file(
     data = load_json_results(source_file)
     results = data.get("results", [])
 
+    if _coerce_bool(options.get("smart_enabled"), default=True):
+        smart_limit = _coerce_int(options.get("smart_limit")) or 1000
+        results = apply_smart_filter(results, smart_limit)
+
     filtered_results = [
         row for row in results
         if isinstance(row, dict) and row_matches_filter(row, options)
@@ -213,7 +273,8 @@ def run_filter(
     if kind not in FILTERABLE_KINDS:
         raise ValueError("filter only supports files, dirs, or subs")
 
-    options = build_auto_filter_options(config) if mode == "filtered" else {}
+    options = build_filter_options(config)
+
     if overrides:
         options.update({k: v for k, v in overrides.items() if v is not None})
 
